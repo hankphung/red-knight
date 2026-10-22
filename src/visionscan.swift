@@ -28,9 +28,73 @@ func toPixels(_ bb: CGRect, _ w: Int, _ h: Int, _ conf: Double) -> Box {
 }
 
 guard CommandLine.arguments.count > 1 else {
-    FileHandle.standardError.write("usage: visionscan <image>\n".data(using: .utf8)!)
+    FileHandle.standardError.write(
+        "usage: visionscan <image> | visionscan --pdf <file> <outdir> <maxpages> <scale>\n"
+            .data(using: .utf8)!)
     exit(64)
 }
+
+// --- PDF rasterisation -----------------------------------------------------
+// A PDF reaches the model as rendered pages, so the only way to inspect one is
+// to render it the same way and treat each page as an image. Kept here rather
+// than in a second binary so a portable install has exactly one thing missing.
+if CommandLine.arguments[1] == "--pdf" {
+    guard CommandLine.arguments.count >= 6 else {
+        FileHandle.standardError.write(
+            "usage: visionscan --pdf <file> <outdir> <maxpages> <scale>\n".data(using: .utf8)!)
+        exit(64)
+    }
+    let src = CommandLine.arguments[2]
+    let outDir = CommandLine.arguments[3]
+    let maxPages = max(1, Int(CommandLine.arguments[4]) ?? 25)
+    let scale = CGFloat(Double(CommandLine.arguments[5]) ?? 2.0)
+
+    guard let doc = CGPDFDocument(URL(fileURLWithPath: src) as CFURL) else {
+        FileHandle.standardError.write("cannot open pdf\n".data(using: .utf8)!)
+        exit(65)
+    }
+    let total = doc.numberOfPages
+    var pages: [String] = []
+    var errors: [String] = []
+
+    for i in 1...max(1, total) where i <= min(total, maxPages) {
+        guard let page = doc.page(at: i) else {
+            errors.append("page \(i): unreadable"); continue
+        }
+        let box = page.getBoxRect(.mediaBox)
+        let rot = page.rotationAngle
+        var pw = box.width, ph = box.height
+        if rot == 90 || rot == 270 { swap(&pw, &ph) }
+        let w = max(1, Int((pw * scale).rounded())), h = max(1, Int((ph * scale).rounded()))
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+            errors.append("page \(i): no context"); continue
+        }
+        // PDF pages are transparent; OCR on an unpainted page reads as noise.
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
+        ctx.concatenate(page.getDrawingTransform(
+            .mediaBox, rect: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)),
+            rotate: 0, preserveAspectRatio: true))
+        ctx.drawPDFPage(page)
+        guard let img = ctx.makeImage(),
+              let data = NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])
+        else { errors.append("page \(i): no image"); continue }
+        let dest = (outDir as NSString).appendingPathComponent(String(format: "page-%04d.png", i))
+        do { try data.write(to: URL(fileURLWithPath: dest)) }
+        catch { errors.append("page \(i): \(error)"); continue }
+        pages.append(dest)
+    }
+
+    let payload: [String: Any] = ["pages": pages, "total": total,
+                                  "rendered": pages.count, "errors": errors]
+    if let d = try? JSONSerialization.data(withJSONObject: payload) {
+        FileHandle.standardOutput.write(d)
+    }
+    exit(0)
+}
+
 let path = CommandLine.arguments[1]
 
 guard let nsImage = NSImage(contentsOfFile: path),

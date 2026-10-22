@@ -26,5 +26,8 @@
   "box_pad": 3,
   "text_box_grow": 0.15,
   "secret_to_line_end": true,
-  "human_box_grow": 0.12
+  "human_box_grow": 0.12,
+  "pdf_max_pages": 25,
+  "pdf_render_scale": 2.0,
+  "pdf_when_unscannable": "deny"
 }

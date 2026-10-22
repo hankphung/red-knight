@@ -1,12 +1,17 @@
 import Foundation
 
-// PostToolUse keyword guard for Bash output. A Swift port of bashfilter.py,
+// PostToolUse keyword guard for Bash and Grep output. A Swift port of
+// bashfilter.py,
 // which stays as the reference implementation that parity-test checks against.
 // Python's interpreter floor is ~36ms; this runs the whole check in ~15ms, and
 // it runs on every Bash call.
 
 let HERE = URL(fileURLWithPath: CommandLine.arguments[0])
     .resolvingSymlinksInPath().deletingLastPathComponent().path
+
+// Grep returns its result in `content`/`filenames`, not `stdout`/`stderr`, so
+// the replacement has to be shaped per tool. Set once the payload is parsed.
+var grepMode = false
 
 func fail(_ why: String) -> Never {
     emit(stdout: "[local file filter error: \(why) - output withheld. This is a filter bug, "
@@ -15,8 +20,16 @@ func fail(_ why: String) -> Never {
 
 func emit(stdout text: String, response: [String: Any]?) -> Never {
     var out = response ?? [:]
-    out["stdout"] = text
-    out["stderr"] = ""
+    if grepMode {
+        out["content"] = text
+        out["filenames"] = [String]()
+        out["numFiles"] = 0
+        out["numLines"] = 0
+        out["numMatches"] = 0
+    } else {
+        out["stdout"] = text
+        out["stderr"] = ""
+    }
     let payload: [String: Any] = ["hookSpecificOutput": [
         "hookEventName": "PostToolUse", "updatedToolOutput": out,
     ]]
@@ -168,38 +181,53 @@ let input = FileHandle.standardInput.readDataToEndOfFile()
 guard let payload = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] else {
     exit(0)  // not a payload we understand; the tool result stands
 }
-guard (payload["tool_name"] as? String) == "Bash" else { exit(0) }
+guard let toolName = payload["tool_name"] as? String,
+      toolName == "Bash" || toolName == "Grep" else { exit(0) }
 guard let response = payload["tool_response"] as? [String: Any] else { exit(0) }
+grepMode = toolName == "Grep"
 
-let command = ((payload["tool_input"] as? [String: Any])?["command"] as? String) ?? ""
-if command.contains(HERE) { exit(0) }  // inspecting our own files would self-trip
+let toolInput = (payload["tool_input"] as? [String: Any]) ?? [:]
+let command = (toolInput["command"] as? String) ?? ""
+let grepFiles = (response["filenames"] as? [String]) ?? []
+let src = grepMode ? "<grep>" : "<bash>"
+let subject = grepMode ? "this search" : "this command"
+// Grep has no command line; the directory it searched and the files it matched
+// are what stands in for one, both here and for the path rules below.
+if ([command, (toolInput["path"] as? String) ?? ""] + grepFiles)
+    .contains(where: { $0.contains(HERE) }) { exit(0) }  // our own files would self-trip
 
 if pathFilterEnabled() {
     let rules = loadRules("paths.txt")
     if !rules.isEmpty {
         var lineSet: [Int: String] = [:]
-        for target in commandTargets(command) {
+        let targets = grepMode
+            ? ([(toolInput["path"] as? String) ?? "", (toolInput["glob"] as? String) ?? ""]
+               + grepFiles).filter { !$0.isEmpty }
+            : commandTargets(command)
+        for target in targets {
             let (ls, ts) = matches(target, rules)
             for (i, l) in ls.enumerated() { lineSet[l] = ts[i] }
         }
         let lines = lineSet.keys.sorted()
         let terms = lines.map { lineSet[$0]! }
         if !lines.isEmpty {
-            logLine(["src": "<bash>", "decision": "deny", "kind": "bash-path",
+            logLine(["src": src, "decision": "deny", "kind": grepMode ? "grep-path" : "bash-path",
                      "cmd": String(command.prefix(200)), "path_lines": lines, "_terms": terms])
             let plural = lines.count == 1 ? "" : "s"
             let ls = lines.map(String.init).joined(separator: ", ")
-            emit(stdout: "[blocked by the local file filter: this command names a path on the "
+            emit(stdout: "[blocked by the local file filter: \(subject) names a path on the "
                        + "path denylist (paths.txt line\(plural) \(ls)). The output was discarded "
                        + "and is NOT available. This is a standing denylist rule, not a judgement "
-                       + "call: do not retry, do not try another command or another slice of the "
+                       + "call: do not retry, do not try another command, tool or another slice of the "
                        + "same file, and do not ask the user to paste it.]",
                  response: response)
         }
     }
 }
 
-let hay = ((response["stdout"] as? String) ?? "") + "\n" + ((response["stderr"] as? String) ?? "")
+let hay = grepMode
+    ? (((response["content"] as? String) ?? "") + "\n" + grepFiles.joined(separator: "\n"))
+    : (((response["stdout"] as? String) ?? "") + "\n" + ((response["stderr"] as? String) ?? ""))
 if hay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { exit(0) }
 
 let keywords = loadRules("keywords.txt")
@@ -227,14 +255,14 @@ for (lineno, raw, rule) in keywords {
 }
 
 if !hitLines.isEmpty {
-    logLine(["src": "<bash>", "decision": "deny", "kind": "bash",
+    logLine(["src": src, "decision": "deny", "kind": grepMode ? "grep" : "bash",
              "cmd": String(command.prefix(200)), "keyword_lines": hitLines, "_terms": hitTerms])
     let plural = hitLines.count == 1 ? "" : "s"
     let lines = hitLines.map(String.init).joined(separator: ", ")
-    emit(stdout: "[blocked by the local file filter: this command's output matched the keyword "
+    emit(stdout: "[blocked by the local file filter: \(subject)'s output matched the keyword "
                + "denylist (keywords.txt line\(plural) \(lines)). The output was discarded and "
                + "is NOT available. This is a standing denylist rule, not a judgement call: do "
-               + "not retry, do not try another command to read the same content, and do not ask "
+               + "not retry, do not try another command or tool to read the same content, and do not ask "
                + "the user to paste it.]",
          response: response)
 }

@@ -44,7 +44,9 @@ def run(binary, payload, is_swift):
     if not out:
         return ("pass", [])
     try:
-        d = json.loads(out)["hookSpecificOutput"]["updatedToolOutput"]["stdout"]
+        r = json.loads(out)["hookSpecificOutput"]["updatedToolOutput"]
+        # Grep's replacement lands in `content`; Bash's in `stdout`.
+        d = r["stdout"] if "stdout" in r else r["content"]
     except Exception as exc:
         return ("malformed:%r" % exc, [])
     # pull the cited line numbers out of the notice so we compare the reason too
@@ -53,6 +55,82 @@ def run(binary, payload, is_swift):
         seg = d.split("keywords.txt line")[1].split(")")[0]
         lines = sorted(int(x) for x in seg.replace("s", "").replace(",", " ").split() if x.isdigit())
     return ("replaced", lines)
+
+
+def first_rule(fname):
+    """Take a fixture term from the live rule file rather than hard-coding one,
+    so these cases keep working whatever the lists happen to contain."""
+    for ln in open(os.path.join(HERE, fname)):
+        ln = ln.strip()
+        if ln and not ln.startswith("#") and not ln.startswith("re:"):
+            return ln
+    return None
+
+
+def grep_payload_for(content, filenames=(), path="/tmp/searched", glob=None):
+    ti = {"pattern": "x", "path": path}
+    if glob:
+        ti["glob"] = glob
+    return {"tool_name": "Grep", "tool_input": ti,
+            "tool_response": {"mode": "content", "numFiles": len(filenames),
+                              "filenames": list(filenames), "content": content,
+                              "numLines": content.count("\n")}}
+
+
+def grep_cases(compare):
+    """Grep returns file content in `content`/`filenames`, so it needs the same
+    denylists as Bash output -- and a different result shape to replace."""
+    kw = first_rule("keywords.txt")
+    if kw is None:
+        print("\n(no literal keyword rule configured; skipping Grep cases)")
+        return 0
+    cases = [
+        ("grep: clean content", grep_payload_for("a.py:1:def foo(): pass\n", ["a.py"]), False),
+        ("grep: term in content", grep_payload_for("a.txt:3:marked %s\n" % kw, ["a.txt"]), True),
+        ("grep: term in filename", grep_payload_for("", ["%s-notes.md" % kw]), True),
+        ("grep: empty result", grep_payload_for("", []), False),
+        ("grep: searched our dir", grep_payload_for("x: %s\n" % kw, [], path=HERE), False),
+    ]
+    fails = 0
+    print("\n%-26s %-18s %s" % ("GREP CASE", "bashfilter.py", "bashguard" if compare else ""))
+    for name, pl, want in cases:
+        a = run(None, pl, False)
+        ok = (a[0] == "replaced") == want
+        b = ("", [])
+        if compare:
+            b = run(None, pl, True)
+            ok = ok and a == b
+        if not ok:
+            fails += 1
+        print("%-26s %-18s %-18s %s" % (name, a[0], b[0] if compare else "",
+                                        "ok" if ok else "DISAGREE/WRONG"))
+    pr = first_rule("paths.txt")
+    if pr is None:
+        return fails
+    cfg = os.path.join(HERE, "config.json")
+    shutil.copy(cfg, cfg + ".grep.bkp")
+    try:
+        c = json.load(open(cfg))
+        c["features"] = {"path_filter": True}
+        json.dump(c, open(cfg, "w"), indent=2)
+        for name, pl, want in [
+            ("grep: denied search path", grep_payload_for("ok\n", [], path="/tmp/%s" % pr), True),
+            ("grep: denied match path", grep_payload_for("ok\n", ["/tmp/%s/a" % pr]), True),
+            ("grep: allowed path", grep_payload_for("ok\n", ["/tmp/plain/a"], path="/tmp/plain"), False),
+        ]:
+            a = run(None, pl, False)
+            ok = (a[0] == "replaced") == want
+            b = ("", [])
+            if compare:
+                b = run(None, pl, True)
+                ok = ok and a[0] == b[0]
+            if not ok:
+                fails += 1
+            print("%-26s %-18s %-18s %s" % (name, a[0], b[0] if compare else "",
+                                            "ok" if ok else "DISAGREE/WRONG"))
+    finally:
+        shutil.move(cfg + ".grep.bkp", cfg)
+    return fails
 
 
 def payload_for(stdout, stderr=""):
@@ -105,6 +183,7 @@ def python_only():
             if text is None:
                 continue
             run(None, payload_for(text), False)   # must not crash
+        fails += grep_cases(False)
         print("\n%s" % ("SELF-CHECK OK (parity NOT verified: no Swift guard here)"
                          if not fails else "%d FAILURE(S)" % fails))
     finally:
@@ -174,6 +253,7 @@ def main():
                 fails += 1
             print("%-26s %-18s %-18s %s" % (name, a[0], b[0], "ok" if same else "DISAGREE"))
         fails += path_cases()
+        fails += grep_cases(True)
         print("\n%s" % ("PARITY OK" if not fails else "%d DISAGREEMENT(S)" % fails))
         return 1 if fails else 0
     finally:

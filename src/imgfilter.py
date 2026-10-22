@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -24,6 +25,12 @@ PATHS = os.path.join(HERE, "paths.txt")
 CONF = os.path.join(HERE, "config.json")
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".tif", ".tiff"}
+
+# A PDF is binary, so the text scan skips it, and it is not an image extension,
+# so the image checks never saw it either -- while the Read tool renders its
+# pages and sends them to the model. It is inspected as what it actually
+# becomes: a sequence of page images.
+PDF_EXT = {".pdf"}
 
 DEFAULTS = {
     # Which checks run. "profile" picks a set; anything in "features" overrides
@@ -61,6 +68,10 @@ DEFAULTS = {
     "text_box_grow": 0.15,   # flat padding is nothing against 80px text
     "secret_to_line_end": True,  # OCR splits long tokens; paint the whole tail
     "human_box_grow": 0.12,  # grow human regions by 12% of their own size
+    # pdf
+    "pdf_max_pages": 25,        # beyond this a document cannot be cleared, so it is denied
+    "pdf_render_scale": 2.0,    # 2x the page box: OCR needs the resolution
+    "pdf_when_unscannable": "deny",  # profile has no image checks but text_keywords is on
 }
 
 
@@ -527,6 +538,67 @@ def consume_override(digest):
         pass
 
 
+def render_pdf(path, conf):
+    """Rasterise every page. Returns (page_png_paths, total_pages)."""
+    outdir = os.path.join(CACHE, "pdf-%s" % hashlib.sha256(path.encode()).hexdigest()[:16])
+    shutil.rmtree(outdir, ignore_errors=True)  # stale pages from an earlier read of this path
+    os.makedirs(outdir, exist_ok=True)
+    res = subprocess.run([VISIONSCAN, "--pdf", path, outdir,
+                          str(int(conf["pdf_max_pages"])), str(float(conf["pdf_render_scale"]))],
+                         capture_output=True, timeout=180)
+    if res.returncode != 0:
+        raise RuntimeError("pdf render failed: %s" % res.stderr.decode()[:200])
+    d = json.loads(res.stdout)
+    if d.get("errors"):
+        raise RuntimeError("pdf render errors: %s" % "; ".join(d["errors"])[:200])
+    return d.get("pages") or [], int(d.get("total") or 0)
+
+
+def stitch_pdf(page_paths, src):
+    """Re-assemble the redacted pages. The result is a raster PDF -- the text
+    layer, embedded metadata and any attachments are gone, so what the model
+    reads is exactly what was inspected."""
+    from PIL import Image
+    imgs = [Image.open(p).convert("RGB") for p in page_paths]
+    try:
+        st = os.stat(src)
+        key = "%s:%s:%s" % (src, st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = src
+    dest = os.path.join(CACHE, "pdf-%s.pdf" % hashlib.sha256(key.encode()).hexdigest()[:24])
+    imgs[0].save(dest, "PDF", save_all=True, append_images=imgs[1:], resolution=150.0)
+    return dest
+
+
+def decide_pdf(path, conf, override=None):
+    """One refused page refuses the file: a document is read as a whole, and
+    letting the clean pages through would just relocate the question."""
+    pages, total = render_pdf(path, conf)
+    base = dict(rendered=len(pages), total=total)
+    if not pages:
+        return dict(decision="deny", cls="pdf", kinds={}, stats=base,
+                    reason="the PDF produced no renderable pages, so nothing in it could be "
+                           "checked")
+    if total > len(pages):
+        return dict(decision="deny", cls="pdf", kinds={}, stats=base,
+                    reason="the PDF has %d pages, over the %d-page cap, so it could not be "
+                           "cleared in full (raise pdf_max_pages in config.json to allow it)"
+                           % (total, int(conf["pdf_max_pages"])))
+    kinds, outs = {}, []
+    for n, page in enumerate(pages, 1):
+        r = decide(page, conf, override, known_class="document")
+        if r["decision"] == "deny":
+            return dict(decision="deny", cls="pdf", kinds={},
+                        stats=dict(base, page=n, **(r.get("stats") or {})),
+                        _terms=r.get("_terms"),
+                        reason="page %d of %d %s" % (n, len(pages), r["reason"]))
+        for k, v in (r.get("kinds") or {}).items():
+            kinds[k] = kinds.get(k, 0) + v
+        outs.append(r["path"])
+    return dict(decision="allow", cls="pdf", path=stitch_pdf(outs, path),
+                kinds=kinds, stats=base)
+
+
 def open_image(path):
     """PIL can't decode HEIC/HEIF; macOS `sips` can. Returns (image, usable_path)."""
     from PIL import Image, UnidentifiedImageError
@@ -577,7 +649,7 @@ def decide_approved(img, path, conf, override, orig_name=""):
                 kinds=kinds, stats=dict(approved_at=override.get("created")))
 
 
-def decide(path, conf, override=None):
+def decide(path, conf, override=None, known_class=None):
     feat = features(conf)
     orig_name = os.path.basename(path)
     img, path = open_image(path)
@@ -595,7 +667,9 @@ def decide(path, conf, override=None):
     stats = dict(color_ratio=round(color_ratio, 4), flat_frac=round(flat_frac, 4),
                  words=len(words), photographic=photographic)
 
-    work, work_path, cls = img, path, None
+    # A rendered PDF page needs no classifier: we know what it is from the file
+    # type, which is firmer evidence than the heuristics below could give.
+    work, work_path, cls = img, path, known_class
 
     quad = first.get("docQuad")
     area = quad_area_frac(quad, first["width"], first["height"]) if quad else 0.0
@@ -612,7 +686,7 @@ def decide(path, conf, override=None):
     # let it fall through rather than disqualify: an embedded photo inside an
     # ordinary screenshot also reads as a "surface", and such a screenshot must
     # still reach the screenshot branch so its human gate applies.
-    if has_surface and len(words) >= conf["min_words_board"]:
+    if cls is None and has_surface and len(words) >= conf["min_words_board"]:
         warped = rectify(img, quad)
         if warped is not None:
             luma = warped.convert("L")
@@ -794,12 +868,22 @@ def main():
                       % ("" if len(hits) == 1 else "s",
                          ", ".join(str(n) for n, _ in hits)), keyword=True)
 
-    if os.path.splitext(path)[1].lower() not in IMAGE_EXT:
+    ext = os.path.splitext(path)[1].lower()
+    is_pdf = ext in PDF_EXT
+    if ext not in IMAGE_EXT and not is_pdf:
         handle_text(abs_path, conf)
 
     feat = features(conf)
     if not any(feat[k] for k in ("image_class_gate", "image_humans",
                                  "image_secrets", "image_keywords")):
+        if is_pdf and feat["text_keywords"] and conf["pdf_when_unscannable"] == "deny":
+            # Keyword filtering is switched on and this profile cannot read a
+            # PDF's words -- an enabled check that cannot run denies.
+            log(dict(src=path, decision="deny", kind="pdf-unscannable"))
+            emit_deny("this profile has no image checks enabled, so a PDF's text cannot be read "
+                      "to check it against the keyword denylist. Use the \"secrets\" or "
+                      "\"strict\" profile to inspect PDFs, or set \"pdf_when_unscannable\": "
+                      "\"allow\" in config.json to let them through unchecked")
         sys.exit(0)  # nothing to do for images under this profile
 
     if not vision_available():
@@ -822,11 +906,11 @@ def main():
         pass
 
     try:
-        result = decide(path, conf, override)
+        result = decide_pdf(path, conf, override) if is_pdf else decide(path, conf, override)
     except Exception as exc:
         log(dict(src=path, decision="deny", reason="filter error: %r" % exc))
-        emit_deny("the image filter failed (%s) and the image was not read; fail-closed by "
-                  "design" % type(exc).__name__)
+        emit_deny("the %s filter failed (%s) and the file was not read; fail-closed by "
+                  "design" % ("PDF" if is_pdf else "image", type(exc).__name__))
 
     if override is not None and result["decision"] == "allow":
         consume_override(override["digest"])  # one approval, one read
@@ -843,8 +927,8 @@ def main():
         "hookEventName": "PreToolUse",
         "permissionDecision": "allow",
         "permissionDecisionReason":
-            "Image filtered locally (class=%s, redacted: %s); reading the redacted copy."
-            % (result["cls"], summary),
+            "%s filtered locally (class=%s, redacted: %s); reading the redacted copy."
+            % ("PDF" if is_pdf else "Image", result["cls"], summary),
         "updatedInput": new_input,
     }}))
     sys.exit(0)

@@ -46,8 +46,8 @@ usage: ./install.sh [--profile strict|secrets|images|text|off] [--portable] [--n
                    (that needs Apple Vision); text, path and Bash-output
                    checks all work. Chosen automatically off macOS.
 
-  --no-bash-hook   skip the PostToolUse hook that scans command output.
-                   That hook costs ~14 ms on every Bash call.
+  --no-bash-hook   skip the PostToolUse hook that scans command and search
+                   output. That hook costs ~14 ms on every Bash and Grep call.
 
   Any of this is changeable later in config.json; re-run to change hooks.
 USAGE
@@ -304,11 +304,17 @@ def install_hook(event, matcher, entry, label):
 
 
 install_hook("PreToolUse", "Read", read_hook, "PreToolUse/Read -> imgfilter.py")
+# Installs before Grep coverage used a "Bash"-only matcher. Leaving that group
+# behind would run the guard twice on one Bash call, and PostToolUse hooks run
+# in parallel on the ORIGINAL output -- last write wins, so the second, stale
+# copy can clobber a real redaction.
+remove_our_hooks("PostToolUse", "Bash")
 if os.environ.get("BASH_HOOK", "yes") == "yes":
-    install_hook("PostToolUse", "Bash", bash_hook, "PostToolUse/Bash -> " + ("bashfilter.py" if portable else "bashguard"))
+    install_hook("PostToolUse", "Bash|Grep", bash_hook,
+                 "PostToolUse/Bash|Grep -> " + ("bashfilter.py" if portable else "bashguard"))
 else:
-    remove_our_hooks("PostToolUse", "Bash")
-    print("  PostToolUse/Bash: not installed (--no-bash-hook)")
+    remove_our_hooks("PostToolUse", "Bash|Grep")
+    print("  PostToolUse/Bash|Grep: not installed (--no-bash-hook)")
 
 with open(settings, "w") as fh:
     json.dump(data, fh, indent=2)
@@ -326,9 +332,9 @@ What changed:
   - $INSTALL_DIR now holds the filter$([ "$PORTABLE" = yes ] || echo ", the two compiled Swift helpers"),
     and (first install only) config.json and keywords.txt.
   - The filter's hooks were added to settings.json: a PreToolUse hook on Read,
-    plus a PostToolUse hook on Bash unless you skipped it. Other hooks you had
-    were left as
-    they were, and the previous settings.json was backed up alongside it.
+    plus a PostToolUse hook on Bash and Grep unless you skipped it. Other hooks
+    you had were left as they were, and the previous settings.json was backed
+    up alongside it.
 
 Next:
   1. Edit $INSTALL_DIR/keywords.txt. The four shipped terms are
