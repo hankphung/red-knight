@@ -76,6 +76,9 @@ PROFILES = {
     # photos and people only; no text scanning anywhere
     "images":  {"image_class_gate": True, "image_humans": True,
                 "image_secrets": False, "image_keywords": False, "text_keywords": False},
+    # text and command output only -- no image analysis at all. This is the
+    # portable profile: everything in it is pure Python and runs anywhere.
+    "text":    {"text_keywords": True},
     # nothing runs; for turning the filter off without uninstalling it
     "off":     dict.fromkeys(FEATURES, False),
 }
@@ -277,6 +280,10 @@ def rectify(img, quad):
     # PIL QUAD order: upper-left, lower-left, lower-right, upper-right
     data = (tl[0], tl[1], bl[0], bl[1], br[0], br[1], tr[0], tr[1])
     return img.transform((w, h), Image.Transform.QUAD, data, Image.Resampling.BICUBIC)
+
+
+def vision_available():
+    return os.path.exists(VISIONSCAN) and os.access(VISIONSCAN, os.X_OK)
 
 
 def scan(path):
@@ -770,6 +777,15 @@ def main():
     if not any(feat[k] for k in ("image_class_gate", "image_humans",
                                  "image_secrets", "image_keywords")):
         sys.exit(0)  # nothing to do for images under this profile
+
+    if not vision_available():
+        # An enabled check that cannot run is not the same as a disabled one.
+        # Off means consent; unavailable means unverified, so it denies.
+        log(dict(src=path, decision="deny", kind="no-vision"))
+        emit_deny("image analysis is not available on this platform -- the vision helper is "
+                  "missing or not executable -- so this image could not be cleared. Images are "
+                  "only inspected on macOS. Set \"profile\": \"text\" in config.json to let "
+                  "images through unchecked instead")
 
     override = None
     try:

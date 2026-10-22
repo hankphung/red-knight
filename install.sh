@@ -24,13 +24,16 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --profile) PROFILE="$2"; shift 2 ;;
     --profile=*) PROFILE="${1#*=}"; shift ;;
+    --portable) PORTABLE=yes; shift ;;
     --no-bash-hook) BASH_HOOK=no; shift ;;
     --bash-hook) BASH_HOOK=yes; shift ;;
     -h|--help)
       cat <<'USAGE'
-usage: ./install.sh [--profile strict|secrets|images|off] [--no-bash-hook]
+usage: ./install.sh [--profile strict|secrets|images|text|off] [--portable] [--no-bash-hook]
 
-  strict   (default) everything on: images gated and redacted, people
+  text     text, paths and command output only -- no image analysis.
+           The portable profile; everything in it is pure Python.
+  strict   (default on macOS) everything on: images gated and redacted, people
            detected, secrets painted, keyword denylist on files and output
   secrets  credentials and keywords only. Images are NOT gated and people
            are NOT detected, so a photo passes -- choose this if your
@@ -38,6 +41,10 @@ usage: ./install.sh [--profile strict|secrets|images|off] [--no-bash-hook]
   images   photos and people only. Nothing is scanned for secrets or
            keywords, so a token in a screenshot passes unredacted
   off      nothing runs; for disabling without uninstalling
+
+  --portable       install without the Swift helpers. No image inspection
+                   (that needs Apple Vision); text, path and Bash-output
+                   checks all work. Chosen automatically off macOS.
 
   --no-bash-hook   skip the PostToolUse hook that scans command output.
                    That hook costs ~14 ms on every Bash call.
@@ -49,9 +56,20 @@ USAGE
   esac
 done
 
+# Portable mode: everything except the image pipeline. The image side needs
+# Apple's Vision framework; the keyword, path and Bash-output checks are pure
+# Python and run anywhere. Detected here, before PROFILE defaults, because the
+# right default depends on it.
+if [ "${PORTABLE:-}" != "yes" ]; then
+  if [ "$(uname -s)" != "Darwin" ] || ! command -v swiftc >/dev/null 2>&1; then
+    PORTABLE=yes
+  fi
+fi
+PORTABLE="${PORTABLE:-no}"
+
 case "${PROFILE:-}" in
-  strict|secrets|images|off|"") ;;
-  *) echo "unknown profile: $PROFILE (strict|secrets|images|off)" >&2; exit 2 ;;
+  strict|secrets|images|text|off|"") ;;
+  *) echo "unknown profile: $PROFILE (strict|secrets|images|text|off)" >&2; exit 2 ;;
 esac
 
 if [ -z "$PROFILE" ] && [ -t 0 ]; then
@@ -65,7 +83,7 @@ if [ -z "$PROFILE" ] && [ -t 0 ]; then
   read -r _p < /dev/tty || _p=1
   case "$_p" in 2) PROFILE=secrets ;; 3) PROFILE=images ;; 4) PROFILE=off ;; *) PROFILE=strict ;; esac
 fi
-PROFILE="${PROFILE:-strict}"
+if [ "$PORTABLE" = "yes" ]; then PROFILE="${PROFILE:-text}"; else PROFILE="${PROFILE:-strict}"; fi
 
 if [ -z "$BASH_HOOK" ] && [ -t 0 ]; then
   printf "  Also scan Bash command output for keywords? Costs ~14ms per call. [Y/n] "
@@ -84,7 +102,16 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 step "Checking prerequisites"
 
-[ "$(uname -s)" = "Darwin" ] || die "macOS only: this uses Apple's Vision framework."
+if [ "$PORTABLE" = "yes" ]; then
+  say "  portable mode: no Apple Vision, so images are NOT inspected"
+  say "                 text, path and Bash-output checks all work"
+  if [ "$PROFILE" != "text" ] && [ "$PROFILE" != "off" ]; then
+    say "  note: profile '$PROFILE' enables image checks that cannot run here,"
+    say "        so images will be DENIED rather than passed unchecked."
+  fi
+fi
+
+if [ "$PORTABLE" = "no" ]; then
 
 os_major="$(sw_vers -productVersion | cut -d. -f1)"
 [ "$os_major" -ge 12 ] 2>/dev/null || die \
@@ -97,6 +124,7 @@ command -v swiftc >/dev/null 2>&1 || die \
   "swiftc not found. Install the Xcode command line tools:
        xcode-select --install"
 say "  swiftc        $(command -v swiftc)"
+fi
 
 # The hook records an absolute interpreter path, so pick one that can actually
 # import Pillow rather than whatever ends up first on PATH at hook time.
@@ -124,6 +152,7 @@ say "  Pillow        $("$PY" -c 'import PIL; print(PIL.__version__)')"
 step "Building the Swift helpers"
 mkdir -p "$INSTALL_DIR"
 for s in visionscan bashguard; do
+  [ "$PORTABLE" = "yes" ] && continue
   swiftc -O -o "$INSTALL_DIR/$s" "$SRC/$s.swift"
   say "  built $INSTALL_DIR/$s"
 done
@@ -165,7 +194,7 @@ PYSET
 # ---------------------------------------------------------------------------
 step "Wiring hooks into $SETTINGS"
 
-INSTALL_DIR="$INSTALL_DIR" SETTINGS="$SETTINGS" PY="$PY" BASH_HOOK="$BASH_HOOK" "$PY" - <<'PYEOF'
+INSTALL_DIR="$INSTALL_DIR" SETTINGS="$SETTINGS" PY="$PY" BASH_HOOK="$BASH_HOOK" PORTABLE="$PORTABLE" "$PY" - <<'PYEOF'
 import json, os, shutil, sys, time
 
 install = os.environ["INSTALL_DIR"]
@@ -182,9 +211,10 @@ read_hook = {
     "onFailure": "block",
     "statusMessage": "Filtering file for sensitive content...",
 }
+portable = os.environ.get("PORTABLE") == "yes"
 bash_hook = {
     "type": "command",
-    "command": os.path.join(install, "bashguard"),
+    "command": py if portable else os.path.join(install, "bashguard"),
     "timeout": 20,
     "statusMessage": "Checking output against the keyword denylist...",
 }
@@ -259,7 +289,7 @@ def install_hook(event, matcher, entry, label):
 
 install_hook("PreToolUse", "Read", read_hook, "PreToolUse/Read -> imgfilter.py")
 if os.environ.get("BASH_HOOK", "yes") == "yes":
-    install_hook("PostToolUse", "Bash", bash_hook, "PostToolUse/Bash -> bashguard")
+    install_hook("PostToolUse", "Bash", bash_hook, "PostToolUse/Bash -> " + ("bashfilter.py" if portable else "bashguard"))
 else:
     remove_our_hooks("PostToolUse", "Bash")
     print("  PostToolUse/Bash: not installed (--no-bash-hook)")

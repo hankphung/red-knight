@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.jpeg" alt="red-knight" width="560">
+</p>
+
 # red-knight
 
 A local, offline filter that sits between your files and a coding agent. It
@@ -220,6 +224,7 @@ overlap much, and you may want only one of them. Each check is independent.
 | `strict` (default) | on | on | on | on | on | -- |
 | `secrets` | -- | -- | on | on | on | -- |
 | `images` | on | on | -- | -- | -- | -- |
+| `text` | -- | -- | -- | -- | on | -- |
 | `off` | -- | -- | -- | -- | -- | -- |
 
 `path_filter` is off in every profile: it is opt-in, because a path rule that
@@ -412,6 +417,55 @@ something like a seed phrase, the durable answer is not to have it on a disk an
 agent can read, and to deny the path in the harness's own permission rules,
 which are enforced rather than inferred.
 
+## Without macOS
+
+The image pipeline needs Apple's Vision framework. Everything else -- the
+keyword denylist on files, the path denylist, and the scan of Bash output -- is
+pure Python and runs anywhere.
+
+```sh
+./install.sh --portable
+```
+
+Chosen automatically when `uname` is not Darwin or `swiftc` is missing. It skips
+the Swift build, runs the Bash guard from `bashfilter.py` instead of the
+compiled `bashguard`, and defaults to the `text` profile.
+
+What you get and what you do not:
+
+| | portable | macOS |
+| --- | --- | --- |
+| keyword denylist on files | yes | yes |
+| path denylist | yes | yes |
+| Bash output scanning | yes, ~52 ms | yes, ~14 ms |
+| image classification, redaction, people | **no** | yes |
+
+`bashfilter.py` is not a cut-down version: it is the reference implementation the
+Swift guard is checked against, and `parity-test` asserts the two agree case for
+case. The only difference is startup cost, because Python's interpreter floor is
+~36 ms against Swift's ~13 ms.
+
+### What happens to images
+
+Depends on the profile, and the distinction is deliberate:
+
+- **`text` or `off`** -- no image check is enabled, so images pass through
+  uninspected. You chose that; it is consent.
+- **any profile with image checks on** -- the checks are enabled but cannot run,
+  which is not the same thing, so images are **denied** with an explanation
+  rather than passed unchecked.
+
+So a portable install never silently stops inspecting something you asked it to
+inspect. If you want images through on a non-Mac, say so with the profile.
+
+### Making images work off macOS
+
+[docs/PORTING.md](docs/PORTING.md) is a measured analysis of what a Linux or
+Windows vision backend would take -- near parity is achievable on Linux, with
+person segmentation the one capability that cannot be matched. The scanner's
+JSON contract is the interface a backend would implement; the Linux prototype in
+that document needed no changes to `imgfilter.py` at all.
+
 ## Configuration
 
 Edit `config.json` in the install directory. Defaults live in `DEFAULTS` in
@@ -475,6 +529,7 @@ src/config.json          tunable thresholds
 src/keywords.txt         example denylist -- replace with your own
 install.sh / uninstall.sh
 docs/PORTING.md          measured analysis of a Linux/Windows port
+docs/logo.jpeg           project logo
 ```
 
 Created in the install directory at run time, and never committed:
