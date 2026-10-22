@@ -210,6 +210,46 @@ Read this list as the specification of what the tool is, not as fine print.
   be classed as a board and cropped to that region, losing UI context. Safe, but
   surprising; `board_min_quad_conf` is the knob.
 
+## Choosing what runs
+
+The two cases this covers -- photographs at home, credentials at work -- do not
+overlap much, and you may want only one of them. Each check is independent.
+
+| | class gate | people | secrets | keywords (images) | keywords (files) |
+| --- | --- | --- | --- | --- | --- |
+| `strict` (default) | on | on | on | on | on |
+| `secrets` | -- | -- | on | on | on |
+| `images` | on | on | -- | -- | -- |
+| `off` | -- | -- | -- | -- | -- |
+
+Pick one at install time, or change `profile` in `config.json` afterwards:
+
+```sh
+./install.sh --profile secrets          # or strict | images | off
+./install.sh --no-bash-hook             # skip output scanning, saves ~14ms/call
+```
+
+Be clear about what each one gives up, because turning a check off is consent,
+not a failure, and nothing will warn you later:
+
+- **`secrets`** does not gate images at all. A photograph -- of a person, of
+  anything -- passes straight through. Choose it if your concern is a leaked
+  token, not a leaked picture.
+- **`images`** does not scan text. An API key in a screenshot is sent in full,
+  and the keyword denylist does not apply to files or command output either.
+- **`off`** is for disabling without uninstalling. It is not a safe default.
+
+Individual checks override the profile, so you can take a profile and add one
+thing back:
+
+```json
+{ "profile": "secrets", "features": { "image_humans": true } }
+```
+
+The Bash hook is separate from all of this: it is a hook installed or not at
+install time, since an uninstalled hook costs nothing while a disabled one still
+spawns a process on every command.
+
 ## Install
 
 Requires macOS 12 (Monterey) or newer, the Xcode command line tools (for

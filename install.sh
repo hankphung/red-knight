@@ -17,6 +17,63 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$REPO/src"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.claude/local-filter}"
 SETTINGS="${SETTINGS:-$HOME/.claude/settings.json}"
+PROFILE="${PROFILE:-}"      # strict | secrets | images | off  (asked if unset)
+BASH_HOOK="${BASH_HOOK:-}"  # yes | no                         (asked if unset)
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --profile) PROFILE="$2"; shift 2 ;;
+    --profile=*) PROFILE="${1#*=}"; shift ;;
+    --no-bash-hook) BASH_HOOK=no; shift ;;
+    --bash-hook) BASH_HOOK=yes; shift ;;
+    -h|--help)
+      cat <<'USAGE'
+usage: ./install.sh [--profile strict|secrets|images|off] [--no-bash-hook]
+
+  strict   (default) everything on: images gated and redacted, people
+           detected, secrets painted, keyword denylist on files and output
+  secrets  credentials and keywords only. Images are NOT gated and people
+           are NOT detected, so a photo passes -- choose this if your
+           concern is leaked tokens, not photographs
+  images   photos and people only. Nothing is scanned for secrets or
+           keywords, so a token in a screenshot passes unredacted
+  off      nothing runs; for disabling without uninstalling
+
+  --no-bash-hook   skip the PostToolUse hook that scans command output.
+                   That hook costs ~14 ms on every Bash call.
+
+  Any of this is changeable later in config.json; re-run to change hooks.
+USAGE
+      exit 0 ;;
+    *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+case "${PROFILE:-}" in
+  strict|secrets|images|off|"") ;;
+  *) echo "unknown profile: $PROFILE (strict|secrets|images|off)" >&2; exit 2 ;;
+esac
+
+if [ -z "$PROFILE" ] && [ -t 0 ]; then
+  echo
+  echo "  Which checks should run?"
+  echo "    1) strict   everything (default)"
+  echo "    2) secrets  credentials + keywords only; photos pass through"
+  echo "    3) images   photos + people only; secrets pass through"
+  echo "    4) off      nothing, without uninstalling"
+  printf "  [1-4, default 1] "
+  read -r _p < /dev/tty || _p=1
+  case "$_p" in 2) PROFILE=secrets ;; 3) PROFILE=images ;; 4) PROFILE=off ;; *) PROFILE=strict ;; esac
+fi
+PROFILE="${PROFILE:-strict}"
+
+if [ -z "$BASH_HOOK" ] && [ -t 0 ]; then
+  printf "  Also scan Bash command output for keywords? Costs ~14ms per call. [Y/n] "
+  read -r _b < /dev/tty || _b=y
+  case "$_b" in [Nn]*) BASH_HOOK=no ;; *) BASH_HOOK=yes ;; esac
+fi
+BASH_HOOK="${BASH_HOOK:-yes}"
+[ "$PROFILE" = "off" ] && BASH_HOOK=no
 
 say()  { printf '%s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
@@ -93,12 +150,22 @@ done
 
 mkdir -p "$INSTALL_DIR/cache" "$INSTALL_DIR/overrides"
 
+step "Setting profile: $PROFILE"
+PROFILE="$PROFILE" "$PY" - <<'PYSET'
+import json, os
+p = os.path.join(os.environ["INSTALL_DIR"], "config.json")
+c = json.load(open(p))
+c["profile"] = os.environ["PROFILE"]
+json.dump(c, open(p, "w"), indent=2)
+print("  config.json profile = %s" % c["profile"])
+PYSET
+
 # ---------------------------------------------------------------------------
 # settings.json
 # ---------------------------------------------------------------------------
 step "Wiring hooks into $SETTINGS"
 
-INSTALL_DIR="$INSTALL_DIR" SETTINGS="$SETTINGS" PY="$PY" "$PY" - <<'PYEOF'
+INSTALL_DIR="$INSTALL_DIR" SETTINGS="$SETTINGS" PY="$PY" BASH_HOOK="$BASH_HOOK" "$PY" - <<'PYEOF'
 import json, os, shutil, sys, time
 
 install = os.environ["INSTALL_DIR"]
@@ -151,6 +218,19 @@ def mentions_us(hook):
     return install in blob
 
 
+def remove_our_hooks(event, matcher):
+    groups = hooks.get(event, [])
+    for g in list(groups):
+        if g.get("matcher") != matcher:
+            continue
+        before = len(g.get("hooks", []))
+        g["hooks"] = [h for h in g.get("hooks", []) if not mentions_us(h)]
+        if before and not g["hooks"]:
+            groups.remove(g)   # drop a group we emptied, never one already empty
+    if event in hooks and not hooks[event]:
+        del hooks[event]
+
+
 def install_hook(event, matcher, entry, label):
     groups = hooks.setdefault(event, [])
     if not isinstance(groups, list):
@@ -178,7 +258,11 @@ def install_hook(event, matcher, entry, label):
 
 
 install_hook("PreToolUse", "Read", read_hook, "PreToolUse/Read -> imgfilter.py")
-install_hook("PostToolUse", "Bash", bash_hook, "PostToolUse/Bash -> bashguard")
+if os.environ.get("BASH_HOOK", "yes") == "yes":
+    install_hook("PostToolUse", "Bash", bash_hook, "PostToolUse/Bash -> bashguard")
+else:
+    remove_our_hooks("PostToolUse", "Bash")
+    print("  PostToolUse/Bash: not installed (--no-bash-hook)")
 
 with open(settings, "w") as fh:
     json.dump(data, fh, indent=2)
@@ -195,8 +279,9 @@ Hooks merged into: $SETTINGS
 What changed:
   - $INSTALL_DIR now holds the filter, the two compiled Swift helpers,
     and (first install only) config.json and keywords.txt.
-  - Two hooks were added to settings.json: a PreToolUse hook on Read and a
-    PostToolUse hook on Bash. Any other hooks you already had were left as
+  - The filter's hooks were added to settings.json: a PreToolUse hook on Read,
+    plus a PostToolUse hook on Bash unless you skipped it. Other hooks you had
+    were left as
     they were, and the previous settings.json was backed up alongside it.
 
 Next:

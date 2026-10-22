@@ -25,6 +25,12 @@ CONF = os.path.join(HERE, "config.json")
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".tif", ".tiff"}
 
 DEFAULTS = {
+    # Which checks run. "profile" picks a set; anything in "features" overrides
+    # it individually. A check that is switched off does not run and cannot
+    # deny -- that is consent, not a failure, and is different from a check
+    # that errors (which still denies).
+    "profile": "strict",
+    "features": {},
     # classification
     "color_ratio_photo": 0.35,     # unique colours / pixels above this => photographic
     "flat_frac_photo": 0.10,       # fraction of near-flat pixels below this => photographic
@@ -55,6 +61,31 @@ DEFAULTS = {
     "secret_to_line_end": True,  # OCR splits long tokens; paint the whole tail
     "human_box_grow": 0.12,  # grow human regions by 12% of their own size
 }
+
+
+FEATURES = ("image_class_gate", "image_humans", "image_secrets",
+            "image_keywords", "text_keywords")
+
+PROFILES = {
+    # everything on -- images gated and redacted, keywords everywhere
+    "strict":  dict.fromkeys(FEATURES, True),
+    # credentials and keywords only; images are not gated or scanned for people
+    "secrets": {"image_class_gate": False, "image_humans": False,
+                "image_secrets": True, "image_keywords": True, "text_keywords": True},
+    # photos and people only; no text scanning anywhere
+    "images":  {"image_class_gate": True, "image_humans": True,
+                "image_secrets": False, "image_keywords": False, "text_keywords": False},
+    # nothing runs; for turning the filter off without uninstalling it
+    "off":     dict.fromkeys(FEATURES, False),
+}
+
+
+def features(conf):
+    base = dict(PROFILES.get(conf.get("profile", "strict"), PROFILES["strict"]))
+    for k, v in (conf.get("features") or {}).items():
+        if k in base:
+            base[k] = bool(v)
+    return base
 
 
 def load_conf():
@@ -470,7 +501,7 @@ def decide_approved(img, path, conf, override, orig_name=""):
     """You looked at this image and approved it, so the class and human gates
     are skipped.  The image is still re-encoded -- approving what you can see is
     not approving the EXIF, which can carry GPS."""
-    keywords = load_keywords()
+    keywords = load_keywords() if features(conf)["image_keywords"] else []
     if keywords and conf["keywords_block_override"]:
         sc = scan(path)
         hits = keyword_hits([scan_text(sc), orig_name], keywords, conf)
@@ -484,7 +515,7 @@ def decide_approved(img, path, conf, override, orig_name=""):
 
     kinds = {}
     out = img.copy()
-    if override["mode"] == "redact":
+    if override["mode"] == "redact" and features(conf)["image_secrets"]:
         final = scan(path)
         text_hits = boxes_for_text(final["text"], conf)
         for _, kind in text_hits:
@@ -498,6 +529,7 @@ def decide_approved(img, path, conf, override, orig_name=""):
 
 
 def decide(path, conf, override=None):
+    feat = features(conf)
     orig_name = os.path.basename(path)
     img, path = open_image(path)
     if img.mode != "RGB":
@@ -550,6 +582,10 @@ def decide(path, conf, override=None):
     if cls is None and not photographic and len(words) >= conf["min_words_screenshot"]:
         cls = "screenshot"
 
+    if cls is None and not feat["image_class_gate"]:
+        # Gate off: the image is allowed through unclassified, but it gets the
+        # STRICT human policy below -- we know less about it, not more.
+        cls = "unclassified"
     if cls is None:
         return dict(decision="deny", cls="other", stats=stats,
                     reason="not a UI screenshot (synthetic render with >=%d words of interface "
@@ -562,7 +598,7 @@ def decide(path, conf, override=None):
     # so anything that was outside the board is already gone).
     final = scan(work_path) if work_path != path else first
 
-    keywords = load_keywords()
+    keywords = load_keywords() if feat["image_keywords"] else []
     if keywords:
         # Check the source AND what would be sent: a term cropped off a board is
         # genuinely gone, but a term anywhere in the file still means "deny".
@@ -575,15 +611,19 @@ def decide(path, conf, override=None):
                                % ("" if len(hits) == 1 else "s",
                                   ", ".join(str(n) for n, _ in hits)))
 
-    faces = [b for b in final["faces"] if b["c"] >= conf["face_conf"]]
-    humans = [b for b in final["humans"] if b["c"] >= conf["human_conf"]]
-    coverage = final.get("personCoverage", 0.0)
+    if feat["image_humans"]:
+        faces = [b for b in final["faces"] if b["c"] >= conf["face_conf"]]
+        humans = [b for b in final["humans"] if b["c"] >= conf["human_conf"]]
+        coverage = final.get("personCoverage", 0.0)
+    else:
+        faces, humans, coverage = [], [], 0.0
     stats["coverage"] = round(coverage, 4)
+    stats["profile"] = conf.get("profile", "strict")
 
     def blocked(reason):
         return dict(decision="deny", cls=cls, stats=stats, reason=reason)
 
-    if cls == "board":
+    if cls in ("board", "unclassified"):
         if faces or humans or coverage > conf["person_coverage_block"]:
             return blocked("human figure or body part on the board image "
                            "(faces=%d humans=%d coverage=%.3f)" % (len(faces), len(humans), coverage))
@@ -596,12 +636,12 @@ def decide(path, conf, override=None):
         if coverage > conf["screenshot_nobox_coverage"] and not faces and not humans:
             return blocked("person pixels detected (coverage=%.3f) with no box to redact" % coverage)
 
-    text_hits = boxes_for_text(final["text"], conf)
+    text_hits = boxes_for_text(final["text"], conf) if feat["image_secrets"] else []
     kinds = {}
     for _, kind in text_hits:
         kinds[kind] = kinds.get(kind, 0) + 1
     human_boxes = faces + humans
-    if final.get("personBBox"):
+    if feat["image_humans"] and final.get("personBBox"):
         human_boxes = human_boxes + [final["personBBox"]]
     if human_boxes:
         kinds["human_region"] = len(human_boxes)
@@ -643,6 +683,8 @@ def keyword_reason(hits):
 def handle_text(path, conf):
     """Non-image read: keyword denylist only.  Nothing is rewritten or redacted --
     a text file is either clean or it is refused."""
+    if not features(conf)["text_keywords"]:
+        sys.exit(0)
     keywords = load_keywords()
     if not keywords:
         sys.exit(0)
@@ -691,6 +733,11 @@ def main():
     conf = load_conf()
     if os.path.splitext(path)[1].lower() not in IMAGE_EXT:
         handle_text(abs_path, conf)
+
+    feat = features(conf)
+    if not any(feat[k] for k in ("image_class_gate", "image_humans",
+                                 "image_secrets", "image_keywords")):
+        sys.exit(0)  # nothing to do for images under this profile
 
     override = None
     try:

@@ -1,4 +1,6 @@
 {
+  "profile": "strict",
+  "features": {},
   "color_ratio_photo": 0.35,
   "flat_frac_photo": 0.1,
   "board_min_quad_area": 0.25,
