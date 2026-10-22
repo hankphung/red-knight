@@ -34,8 +34,12 @@ CASES = [
 ]
 
 
+SWIFT = os.path.join(HERE, "bashguard")
+HAVE_SWIFT = os.path.exists(SWIFT) and os.access(SWIFT, os.X_OK)
+
+
 def run(binary, payload, is_swift):
-    cmd = [os.path.join(HERE, "bashguard")] if is_swift else [PY, os.path.join(HERE, "bashfilter.py")]
+    cmd = [SWIFT] if is_swift else [PY, os.path.join(HERE, "bashfilter.py")]
     out = subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True).stdout.strip()
     if not out:
         return ("pass", [])
@@ -57,12 +61,7 @@ def payload_for(stdout, stderr=""):
                               "isImage": False, "noOutputExpected": False}}
 
 
-def path_cases():
-    """The path denylist is matched against the COMMAND, not the output, and is
-    opt-in -- so it needs its own toggled pass."""
-    cfg = os.path.join(HERE, "config.json")
-    shutil.copy(cfg, cfg + ".parity.bkp")
-    cases = [
+PATH_CASES = [
         ("path: seed file",        "tail -1 /x/recovery-phrase.txt", True),
         ("path: pem",              "openssl rsa -in /x/server.pem",  True),
         ("path: ssh key",          "cat ~/.ssh/id_rsa",              True),
@@ -76,7 +75,49 @@ def path_cases():
         ("path: chained",          "cat /x/.env && echo ok",           True),
         ("path: example suffix",   "cat /x/.env.example",              False),
         ("path: not a path",       "echo no paths here",             False),
-    ]
+]
+
+
+def python_only():
+    """A portable install has no Swift guard, so there is nothing to compare
+    against. Check the Python implementation against its own expectations
+    instead, and say plainly that parity was not verified."""
+    cfg = os.path.join(HERE, "config.json")
+    shutil.copy(cfg, cfg + ".parity.bkp")
+    fails = 0
+    try:
+        c = json.load(open(cfg))
+        c["features"] = {"path_filter": True}
+        json.dump(c, open(cfg, "w"), indent=2)
+        print("bashguard is not installed (portable install), so the two")
+        print("implementations cannot be compared. Checking bashfilter.py against")
+        print("its own expectations instead.\n")
+        print("%-26s %-10s %s" % ("CASE", "result", ""))
+        for name, cmd, want in PATH_CASES:
+            pl = payload_for("harmless\n")
+            pl["tool_input"]["command"] = cmd
+            got = run(None, pl, False)[0] == "replaced"
+            if got != want:
+                fails += 1
+            print("%-26s %-10s %s" % (name, "replaced" if got else "pass",
+                                      "ok" if got == want else "WRONG, want %s" % want))
+        for name, text in CASES:
+            if text is None:
+                continue
+            run(None, payload_for(text), False)   # must not crash
+        print("\n%s" % ("SELF-CHECK OK (parity NOT verified: no Swift guard here)"
+                         if not fails else "%d FAILURE(S)" % fails))
+    finally:
+        shutil.move(cfg + ".parity.bkp", cfg)
+    return fails
+
+
+def path_cases():
+    """The path denylist is matched against the COMMAND, not the output, and is
+    opt-in -- so it needs its own toggled pass."""
+    cfg = os.path.join(HERE, "config.json")
+    shutil.copy(cfg, cfg + ".parity.bkp")
+    cases = PATH_CASES
     fails = 0
     try:
         c = json.load(open(cfg))
@@ -98,6 +139,8 @@ def path_cases():
 
 
 def main():
+    if not HAVE_SWIFT:
+        return python_only()
     kw = os.path.join(HERE, "keywords.txt")
     shutil.copy(kw, kw + ".parity.bkp")
     with open(kw, "a") as fh:

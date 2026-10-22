@@ -445,6 +445,31 @@ Swift guard is checked against, and `parity-test` asserts the two agree case for
 case. The only difference is startup cost, because Python's interpreter floor is
 ~36 ms against Swift's ~13 ms.
 
+### Linux caveats
+
+Verified by installing and exercising it in a Debian-slim container
+(`linux/arm64`, Python 3.12) -- not by assuming it would work. What you should
+know before relying on it there:
+
+- **No image inspection at all.** Not degraded, absent. Classification,
+  redaction, face and person detection and the board crop are all Vision. On a
+  non-Mac the image half of this tool does not exist.
+- **Pillow is not required** and is not checked for. It is only used by the
+  image pipeline. If you install it anyway, nothing changes.
+- **The Bash guard runs in Python**, so it costs ~52 ms per command instead of
+  ~14 ms. Same logic, same results -- Python's interpreter floor is the whole
+  difference.
+- **`parity-test` can only self-check.** With no Swift binary there is nothing
+  to compare against, so it verifies the Python implementation against its own
+  expectations and says `parity NOT verified` rather than implying otherwise.
+- **`allow-image` is effectively unavailable.** It exists to approve an image
+  past the filter, and no image is being filtered.
+- **x86_64 is untested.** Nothing in the portable path is architecture-specific
+  -- it is Python and shell -- but I only ran it on arm64, so take that as
+  reasoning rather than evidence.
+- **Windows is untested entirely.** The portable path is bash plus Python, so
+  WSL is the plausible route; a native PowerShell install has never been tried.
+
 ### What happens to images
 
 Depends on the profile, and the distinction is deliberate:

@@ -132,10 +132,22 @@ PY=""
 for cand in ${FILTER_PYTHON:-} "$(command -v python3 || true)" \
             /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
   [ -n "$cand" ] && [ -x "$cand" ] || continue
-  if "$cand" -c 'import PIL' >/dev/null 2>&1; then PY="$cand"; break; fi
+  # Pillow is only used by the image pipeline, which needs Apple Vision. A
+  # portable install denies images before anything decodes one, so demanding
+  # Pillow there would block a working install over a library it never imports.
+  if [ "$PORTABLE" = "yes" ]; then
+    "$cand" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,8) else 1)' \
+      >/dev/null 2>&1 && { PY="$cand"; break; }
+  elif "$cand" -c 'import PIL' >/dev/null 2>&1; then
+    PY="$cand"; break
+  fi
 done
 if [ -z "$PY" ]; then
   have="$(command -v python3 || echo 'none')"
+  if [ "$PORTABLE" = "yes" ]; then
+    die "no python3 (>= 3.8) found. Python 3 on PATH: $have
+     Install Python 3, or point at one with FILTER_PYTHON=/path/to/python3"
+  fi
   die "no python3 with Pillow found (looked at: \$FILTER_PYTHON, PATH, Homebrew, /usr/bin).
    Python 3 on PATH: $have
    Install Pillow for the interpreter you want the hook to use, e.g.
@@ -144,7 +156,11 @@ if [ -z "$PY" ]; then
 fi
 PY="$("$PY" -c 'import sys; print(sys.executable)')"
 say "  python3       $PY ($("$PY" -c 'import sys;print(".".join(map(str,sys.version_info[:3])))'))"
+if [ "$PORTABLE" = "yes" ]; then
+  say "  Pillow        not required in portable mode"
+else
 say "  Pillow        $("$PY" -c 'import PIL; print(PIL.__version__)')"
+fi
 
 # ---------------------------------------------------------------------------
 # build + copy
@@ -180,7 +196,7 @@ done
 mkdir -p "$INSTALL_DIR/cache" "$INSTALL_DIR/overrides"
 
 step "Setting profile: $PROFILE"
-PROFILE="$PROFILE" "$PY" - <<'PYSET'
+INSTALL_DIR="$INSTALL_DIR" PROFILE="$PROFILE" "$PY" - <<'PYSET'
 import json, os
 p = os.path.join(os.environ["INSTALL_DIR"], "config.json")
 c = json.load(open(p))
@@ -307,7 +323,7 @@ Installed to: $INSTALL_DIR
 Hooks merged into: $SETTINGS
 
 What changed:
-  - $INSTALL_DIR now holds the filter, the two compiled Swift helpers,
+  - $INSTALL_DIR now holds the filter$([ "$PORTABLE" = yes ] || echo ", the two compiled Swift helpers"),
     and (first install only) config.json and keywords.txt.
   - The filter's hooks were added to settings.json: a PreToolUse hook on Read,
     plus a PostToolUse hook on Bash unless you skipped it. Other hooks you had
