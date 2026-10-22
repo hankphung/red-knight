@@ -193,9 +193,15 @@ Read this list as the specification of what the tool is, not as fine print.
 - **Transformed output escapes the Bash guard.** base64 is decoded before
   matching, but hex (`xxd`), compression, encryption, chunking across several
   commands and any bespoke encoding all defeat it.
-- **Telemetry sees the original.** Claude Code records tool output for
-  OpenTelemetry/analytics *before* hooks run. If that is enabled in your
-  environment, the raw output is captured regardless of what the hook decides.
+- **Telemetry can see the original — but only if it is configured to.** Claude
+  Code's OpenTelemetry export carries no tool output by default: the standard
+  `tool_result` event records sizes, not content. Two opt-in settings change
+  that. `OTEL_LOG_TOOL_CONTENT` (with the traces beta) adds a `tool.output`
+  span carrying the file text for Read and stdout/stderr for Bash, and
+  `OTEL_LOG_RAW_API_BODIES` exports the whole conversation. Where either is on,
+  the capture happens *before* hooks run, so what is recorded is the
+  unredacted version and this filter cannot reach it. Check your own
+  configuration rather than assuming either way.
 - **False negatives are certain.** OCR misses rotated, low-contrast and very
   small text. Face detection is near its floor at ~24px avatars. Secret patterns
   are heuristics. No rule set is complete, and a term that is not in
