@@ -393,3 +393,11 @@ macOS only. `visionscan` and `bashguard` are Swift against Apple's Vision
 framework, and `VNGeneratePersonSegmentationRequest` and
 `VNDetectDocumentSegmentationRequest` are macOS 12 APIs. There is no Linux or
 Windows path; the image side would need a different vision stack entirely.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
+
+The warranty disclaimer is not boilerplate here. This tool reduces the chance of
+an accidental disclosure; it does not prevent one, and the "What still gets
+through" section above is the honest account of where it fails.
