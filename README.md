@@ -481,6 +481,26 @@ Same syntax as `keywords.txt`: plain text is a case-insensitive substring of the
 whole path, `re:` is a regular expression. It applies to file reads and to Bash
 commands that *name* a matching path.
 
+### What a refusal actually looks like
+
+![a coding agent refusing to read two denylisted files](docs/demo-path-denylist.png)
+
+Asked to read the other files in a directory, the agent reports that two of them
+sit on the path denylist and that the read was blocked before any content
+reached it — then says it will not try another command or tool to get at them.
+
+That last part is deliberate. The refusal text tells the model this is a
+standing rule rather than a judgement about the request, because an agent that
+treats a denial as an obstacle will cheerfully try `base64`, `head -c`, or a
+different tool. The wording is part of the control.
+
+**The black bars in that screenshot are this tool redacting itself.** The image
+was read through the same filter, which painted out three regions matching its
+assignment-shaped-secret pattern — `const secretData = ...` among them. Ordinary
+code, not secrets: a visible false positive, left in rather than staged away,
+because it is what the filter actually does. Tune `entropy_threshold` and the
+secret patterns if it costs you too much; expect to keep some of it.
+
 ### Why this exists separately
 
 A content tag protects only the slice of a file that is actually read. Tag a
