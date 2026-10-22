@@ -215,12 +215,15 @@ Read this list as the specification of what the tool is, not as fine print.
 The two cases this covers -- photographs at home, credentials at work -- do not
 overlap much, and you may want only one of them. Each check is independent.
 
-| | class gate | people | secrets | keywords (images) | keywords (files) |
-| --- | --- | --- | --- | --- | --- |
-| `strict` (default) | on | on | on | on | on |
-| `secrets` | -- | -- | on | on | on |
-| `images` | on | on | -- | -- | -- |
-| `off` | -- | -- | -- | -- | -- |
+| | class gate | people | secrets | keywords (images) | keywords (files) | paths |
+| --- | --- | --- | --- | --- | --- | --- |
+| `strict` (default) | on | on | on | on | on | -- |
+| `secrets` | -- | -- | on | on | on | -- |
+| `images` | on | on | -- | -- | -- | -- |
+| `off` | -- | -- | -- | -- | -- | -- |
+
+`path_filter` is off in every profile: it is opt-in, because a path rule that
+is too broad silently blocks ordinary work. See [Filtering by path](#filtering-by-path).
 
 Pick one at install time, or change `profile` in `config.json` afterwards:
 
@@ -364,6 +367,50 @@ Other scanning details:
 - files over `text_scan_max_bytes` (64 MB) are **denied**, not half-scanned —
   scanning part of a file and passing it would be fail-open
 - throughput is roughly 70 MB/s
+
+## Filtering by path
+
+`paths.txt` refuses a file by what it is **called**, independently of what it
+contains. It is off until you turn it on:
+
+```json
+{ "features": { "path_filter": true } }
+```
+
+Same syntax as `keywords.txt`: plain text is a case-insensitive substring of the
+whole path, `re:` is a regular expression. It applies to file reads and to Bash
+commands that *name* a matching path.
+
+### Why this exists separately
+
+A content tag protects only the slice of a file that is actually read. Tag a
+wallet backup `CONFIDENTIAL` on line 1 and the keyword denylist refuses `cat` on
+it -- but not this:
+
+```sh
+tail -1 wallet/recovery-phrase.txt     # skips the tag, body comes through
+```
+
+That is not a bug in the keyword matcher; it is what content matching *is*. The
+denylist sees the output, and the output no longer contains the tag. `sed -n`,
+`awk NR>2` and `grep` do the same thing.
+
+A path does not change whichever slice is read, so a path rule closes that hole.
+The two lists are complementary and deliberately separate: one asks what a file
+contains, the other what it is.
+
+### The cost
+
+Substring matching is blunt on purpose -- `confidential` matches
+`confidentially_yours.md`, which is usually what you want and occasionally is
+not. The shipped list keeps the noisy entries (`secret`, `private`, `password`,
+`wallet`, `credentials`) commented out, because each will also match ordinary
+source files. Try one before committing to it.
+
+Neither list protects a file whose name and contents are both unremarkable. For
+something like a seed phrase, the durable answer is not to have it on a disk an
+agent can read, and to deny the path in the harness's own permission rules,
+which are enforced rather than inferred.
 
 ## Configuration
 

@@ -57,6 +57,39 @@ def payload_for(stdout, stderr=""):
                               "isImage": False, "noOutputExpected": False}}
 
 
+def path_cases():
+    """The path denylist is matched against the COMMAND, not the output, and is
+    opt-in -- so it needs its own toggled pass."""
+    cfg = os.path.join(HERE, "config.json")
+    shutil.copy(cfg, cfg + ".parity.bkp")
+    cases = [
+        ("path: seed file",        "tail -1 /x/recovery-phrase.txt", True),
+        ("path: pem",              "openssl rsa -in /x/server.pem",  True),
+        ("path: ssh key",          "cat ~/.ssh/id_rsa",              True),
+        ("path: ordinary source",  "cat src/main.py",                False),
+        ("path: no path at all",   "ls -la",                         False),
+        ("path: substring in word","cat confidentially_yours.md",    True),
+    ]
+    fails = 0
+    try:
+        c = json.load(open(cfg))
+        c["features"] = {"path_filter": True}
+        json.dump(c, open(cfg, "w"), indent=2)
+        print("\n%-26s %-18s %-18s" % ("PATH CASE (opt-in on)", "bashfilter.py", "bashguard"))
+        for name, cmd, want in cases:
+            pl = {"tool_name": "Bash", "tool_input": {"command": cmd},
+                  "tool_response": {"stdout": "harmless\n", "stderr": "", "interrupted": False,
+                                    "isImage": False, "noOutputExpected": False}}
+            a, b = run(None, pl, False), run(None, pl, True)
+            same = (a[0] == b[0]) and ((a[0] == "replaced") == want)
+            if not same:
+                fails += 1
+            print("%-26s %-18s %-18s %s" % (name, a[0], b[0], "ok" if same else "DISAGREE/WRONG"))
+    finally:
+        shutil.move(cfg + ".parity.bkp", cfg)
+    return fails
+
+
 def main():
     kw = os.path.join(HERE, "keywords.txt")
     shutil.copy(kw, kw + ".parity.bkp")
@@ -90,6 +123,7 @@ def main():
             if not same:
                 fails += 1
             print("%-26s %-18s %-18s %s" % (name, a[0], b[0], "ok" if same else "DISAGREE"))
+        fails += path_cases()
         print("\n%s" % ("PARITY OK" if not fails else "%d DISAGREEMENT(S)" % fails))
         return 1 if fails else 0
     finally:

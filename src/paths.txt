@@ -1,0 +1,36 @@
+# Path denylist -- OFF by default. Enable with:
+#     { "features": { "path_filter": true } }   in config.json
+#
+# A file whose PATH matches any live entry here is refused outright, and a Bash
+# command mentioning such a path has its output withheld. This is separate from
+# keywords.txt on purpose: that one inspects what a file CONTAINS, this one
+# inspects what it is CALLED.
+#
+# Why both: a content tag only protects the part of a file that is actually
+# read. `tail -1 wallet/backup.txt` skips a CONFIDENTIAL header and the body
+# comes through. The path does not change no matter which slice is read.
+#
+# Same syntax as keywords.txt: plain text is a case-insensitive substring of the
+# whole path; `re:` is a regular expression. No OCR-damage matching here -- a
+# path is exact text.
+
+confidential
+mnemonic
+seed-phrase
+seedphrase
+recovery-phrase
+id_rsa
+id_ed25519
+/.ssh/
+/.gnupg/
+re:\.(pem|p12|pfx|keystore|jks)$
+re:(^|/)\.env(\.|$)
+
+# Noisier -- uncomment if you want them. Each one will also match ordinary
+# source files, so try them before committing to them:
+# wallet
+# secret
+# private
+# password
+# credentials
+# payslip

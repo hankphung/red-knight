@@ -20,6 +20,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import imgfilter as F  # noqa: E402
 
+PATH_NOTICE = ("[blocked by the local file filter: this command names a path on the path "
+               "denylist (paths.txt line%s %s). The output was discarded and is NOT available. "
+               "This is a standing denylist rule, not a judgement call: do not retry, do not "
+               "try another command or another slice of the same file, and do not ask the user "
+               "to paste it.]")
+
 NOTICE = ("[blocked by the local file filter: this command's output matched the keyword "
           "denylist (keywords.txt line%s %s). The output was discarded and is NOT available. "
           "This is a standing denylist rule, not a judgement call: do not retry, do not try "
@@ -77,6 +83,18 @@ def main():
         sys.exit(0)  # inspecting the filter's own files would self-trip
 
     try:
+        conf0 = F.load_conf()
+        # Only an explicit features.path_filter turns this on: it is off in
+        # every profile, so there is no profile table to replicate here.
+        if (conf0.get("features") or {}).get("path_filter"):
+            phits = F.path_hits(command, conf0)
+            if phits:
+                F.log(dict(src="<bash>", decision="deny", kind="bash-path",
+                           cmd=command[:200], path_lines=[n for n, _ in phits],
+                           _terms=[r for _, r in phits]))
+                replace(payload, PATH_NOTICE % (
+                    "" if len(phits) == 1 else "s",
+                    ", ".join(str(n) for n, _ in phits)))
         keywords = F.load_keywords()
         if not keywords:
             sys.exit(0)

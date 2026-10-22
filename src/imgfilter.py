@@ -20,6 +20,7 @@ CACHE = os.path.join(HERE, "cache")
 LOG = os.path.join(HERE, "log.jsonl")
 OVERRIDES = os.path.join(HERE, "overrides")
 KEYWORDS = os.path.join(HERE, "keywords.txt")
+PATHS = os.path.join(HERE, "paths.txt")
 CONF = os.path.join(HERE, "config.json")
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".tif", ".tiff"}
@@ -64,13 +65,13 @@ DEFAULTS = {
 
 
 FEATURES = ("image_class_gate", "image_humans", "image_secrets",
-            "image_keywords", "text_keywords")
+            "image_keywords", "text_keywords", "path_filter")
 
 PROFILES = {
     # everything on -- images gated and redacted, keywords everywhere
-    "strict":  dict.fromkeys(FEATURES, True),
+    "strict":  dict(dict.fromkeys(FEATURES, True), path_filter=False),
     # credentials and keywords only; images are not gated or scanned for people
-    "secrets": {"image_class_gate": False, "image_humans": False,
+    "secrets": {"path_filter": False, "image_class_gate": False, "image_humans": False,
                 "image_secrets": True, "image_keywords": True, "text_keywords": True},
     # photos and people only; no text scanning anywhere
     "images":  {"image_class_gate": True, "image_humans": True,
@@ -81,7 +82,10 @@ PROFILES = {
 
 
 def features(conf):
-    base = dict(PROFILES.get(conf.get("profile", "strict"), PROFILES["strict"]))
+    # Start from all-off so a feature a profile forgets to mention defaults to
+    # off rather than KeyError-ing or silently inheriting something else.
+    base = dict.fromkeys(FEATURES, False)
+    base.update(PROFILES.get(conf.get("profile", "strict"), PROFILES["strict"]))
     for k, v in (conf.get("features") or {}).items():
         if k in base:
             base[k] = bool(v)
@@ -332,11 +336,11 @@ def _fold(s):
     return _squash(s.lower().translate(_CONFUSABLES)).replace("rn", "m").replace("vv", "w")
 
 
-def load_keywords():
+def load_rules(path):
     """-> [(lineno, raw, kind, matcher)]; kind is 'text' or 'regex'."""
     out = []
     try:
-        with open(KEYWORDS) as fh:
+        with open(path) as fh:
             lines = fh.readlines()
     except OSError:
         return out
@@ -353,6 +357,20 @@ def load_keywords():
         else:
             out.append((n, entry, "text", entry))
     return out
+
+
+def load_keywords():
+    return load_rules(KEYWORDS)
+
+
+def load_paths():
+    return load_rules(PATHS)
+
+
+def path_hits(path, conf):
+    """Match the whole path, exactly -- no OCR-damage passes; a path is text."""
+    rules = load_paths()
+    return keyword_hits([path], rules, conf, ocr=False) if rules else []
 
 
 def keyword_hits(haystacks, keywords, conf, ocr=True):
@@ -731,6 +749,20 @@ def main():
         sys.exit(0)  # our own keywords/log/cache -- scanning these would self-trip
 
     conf = load_conf()
+
+    # Path denylist, before anything looks inside the file. A content tag only
+    # protects the slice of a file that is actually read; the path does not
+    # change whichever slice that is.
+    if features(conf)["path_filter"]:
+        hits = path_hits(abs_path, conf)
+        if hits:
+            log(dict(src=path, decision="deny", kind="path",
+                     path_lines=[n for n, _ in hits], _terms=[r for _, r in hits]))
+            emit_deny("the path matches the path denylist (paths.txt line%s %s); the term "
+                      "itself is deliberately not repeated here"
+                      % ("" if len(hits) == 1 else "s",
+                         ", ".join(str(n) for n, _ in hits)), keyword=True)
+
     if os.path.splitext(path)[1].lower() not in IMAGE_EXT:
         handle_text(abs_path, conf)
 

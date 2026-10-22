@@ -45,8 +45,8 @@ func normBytes(_ s: String) -> [UInt8] {
 
 enum Rule { case text([UInt8]), regex(NSRegularExpression) }
 
-func loadKeywords() -> [(Int, String, Rule)] {
-    guard let raw = try? String(contentsOfFile: HERE + "/keywords.txt", encoding: .utf8) else {
+func loadRules(_ file: String) -> [(Int, String, Rule)] {
+    guard let raw = try? String(contentsOfFile: HERE + "/" + file, encoding: .utf8) else {
         return []
     }
     var out: [(Int, String, Rule)] = []
@@ -117,6 +117,35 @@ func logLine(_ fields: [String: Any]) {
     }
 }
 
+// Only an explicit features.path_filter turns the path denylist on; it is off
+// in every profile, so there is no profile table to replicate here.
+func pathFilterEnabled() -> Bool {
+    guard let d = FileManager.default.contents(atPath: HERE + "/config.json"),
+          let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+          let f = o["features"] as? [String: Any] else { return false }
+    return (f["path_filter"] as? Bool) ?? false
+}
+
+
+func matches(_ hay: String, _ rules: [(Int, String, Rule)]) -> ([Int], [String]) {
+    let needle = normBytes(hay)
+    let nd = Data(needle)
+    let ns = String(decoding: nd, as: UTF8.self)
+    var lines: [Int] = []; var terms: [String] = []
+    for (lineno, raw, rule) in rules {
+        switch rule {
+        case .text(let t):
+            if !t.isEmpty && nd.range(of: Data(t)) != nil { lines.append(lineno); terms.append(raw) }
+        case .regex(let rx):
+            if rx.firstMatch(in: ns, range: NSRange(ns.startIndex..., in: ns)) != nil {
+                lines.append(lineno); terms.append(raw)
+            }
+        }
+    }
+    return (lines, terms)
+}
+
+
 // ---------------------------------------------------------------------------
 let input = FileHandle.standardInput.readDataToEndOfFile()
 guard let payload = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] else {
@@ -128,10 +157,29 @@ guard let response = payload["tool_response"] as? [String: Any] else { exit(0) }
 let command = ((payload["tool_input"] as? [String: Any])?["command"] as? String) ?? ""
 if command.contains(HERE) { exit(0) }  // inspecting our own files would self-trip
 
+if pathFilterEnabled() {
+    let rules = loadRules("paths.txt")
+    if !rules.isEmpty {
+        let (lines, terms) = matches(command, rules)
+        if !lines.isEmpty {
+            logLine(["src": "<bash>", "decision": "deny", "kind": "bash-path",
+                     "cmd": String(command.prefix(200)), "path_lines": lines, "_terms": terms])
+            let plural = lines.count == 1 ? "" : "s"
+            let ls = lines.map(String.init).joined(separator: ", ")
+            emit(stdout: "[blocked by the local file filter: this command names a path on the "
+                       + "path denylist (paths.txt line\(plural) \(ls)). The output was discarded "
+                       + "and is NOT available. This is a standing denylist rule, not a judgement "
+                       + "call: do not retry, do not try another command or another slice of the "
+                       + "same file, and do not ask the user to paste it.]",
+                 response: response)
+        }
+    }
+}
+
 let hay = ((response["stdout"] as? String) ?? "") + "\n" + ((response["stderr"] as? String) ?? "")
 if hay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { exit(0) }
 
-let keywords = loadKeywords()
+let keywords = loadRules("keywords.txt")
 if keywords.isEmpty { exit(0) }
 
 let needleData = Data(normBytes(withDecoded(hay)))

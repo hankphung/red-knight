@@ -138,7 +138,7 @@ say "  code: imgfilter.py bashfilter.py allow-image parity-test (+ the .swift so
 
 # Your tuning and your denylist are yours; never clobber them on a re-run.
 kept=""
-for f in config.json keywords.txt; do
+for f in config.json keywords.txt paths.txt; do
   if [ -e "$INSTALL_DIR/$f" ]; then
     kept="$kept $f"
   else
