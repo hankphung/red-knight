@@ -87,7 +87,7 @@ def main():
         # Only an explicit features.path_filter turns this on: it is off in
         # every profile, so there is no profile table to replicate here.
         if (conf0.get("features") or {}).get("path_filter"):
-            phits = F.path_hits(command, conf0)
+            phits = F.command_path_hits(command, conf0)
             if phits:
                 F.log(dict(src="<bash>", decision="deny", kind="bash-path",
                            cmd=command[:200], path_lines=[n for n, _ in phits],

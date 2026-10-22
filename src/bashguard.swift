@@ -127,6 +127,23 @@ func pathFilterEnabled() -> Bool {
 }
 
 
+// A path rule is anchored for a path (\.pem$), but in a command `$` is
+// end-of-command, so `cat x.pem | head` would never match. Match each
+// path-shaped token separately, and the whole command too so unanchored
+// literal rules still work.
+let cmdToken = try! NSRegularExpression(pattern: "[^\\s;|&()<>'\"]+")
+
+func commandTargets(_ command: String) -> [String] {
+    var out = [command]
+    let ns = command as NSString
+    for m in cmdToken.matches(in: command, range: NSRange(location: 0, length: ns.length)) {
+        let t = ns.substring(with: m.range).trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+        if t.contains("/") || t.hasPrefix(".") { out.append(t) }
+    }
+    return out
+}
+
+
 func matches(_ hay: String, _ rules: [(Int, String, Rule)]) -> ([Int], [String]) {
     let needle = normBytes(hay)
     let nd = Data(needle)
@@ -160,7 +177,13 @@ if command.contains(HERE) { exit(0) }  // inspecting our own files would self-tr
 if pathFilterEnabled() {
     let rules = loadRules("paths.txt")
     if !rules.isEmpty {
-        let (lines, terms) = matches(command, rules)
+        var lineSet: [Int: String] = [:]
+        for target in commandTargets(command) {
+            let (ls, ts) = matches(target, rules)
+            for (i, l) in ls.enumerated() { lineSet[l] = ts[i] }
+        }
+        let lines = lineSet.keys.sorted()
+        let terms = lines.map { lineSet[$0]! }
         if !lines.isEmpty {
             logLine(["src": "<bash>", "decision": "deny", "kind": "bash-path",
                      "cmd": String(command.prefix(200)), "path_lines": lines, "_terms": terms])

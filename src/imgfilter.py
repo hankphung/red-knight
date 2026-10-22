@@ -380,6 +380,30 @@ def path_hits(path, conf):
     return keyword_hits([path], rules, conf, ocr=False) if rules else []
 
 
+_CMD_TOKEN = re.compile(r"[^\s;|&()<>'\"]+")
+
+
+def command_path_hits(command, conf):
+    r"""Path rules against a COMMAND string.
+
+    A path rule is anchored for a path (`\.pem$`), but in a command `$` means
+    end-of-command, so `cat x.pem | head` would never match. Match each
+    path-shaped token separately, and the whole command too so that unanchored
+    literal rules still work.
+    """
+    rules = load_paths()
+    if not rules:
+        return []
+    found = {}
+    for tok in _CMD_TOKEN.findall(command):
+        if "/" in tok or tok.startswith("."):
+            for n, raw in keyword_hits([tok.strip("'\"")], rules, conf, ocr=False):
+                found[n] = raw
+    for n, raw in keyword_hits([command], rules, conf, ocr=False):
+        found[n] = raw
+    return sorted(found.items())
+
+
 def keyword_hits(haystacks, keywords, conf, ocr=True):
     """Match every entry against the OCR text and the filename.  OCR mangles
     spacing and punctuation, so a literal term is also matched with both

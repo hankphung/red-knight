@@ -69,6 +69,13 @@ def path_cases():
         ("path: ordinary source",  "cat src/main.py",                False),
         ("path: no path at all",   "ls -la",                         False),
         ("path: substring in word","cat confidentially_yours.md",    True),
+        # A path rule is anchored for a path; in a command `$` is end-of-command,
+        # so these shapes regressed once and must stay covered.
+        ("path: piped",            "cat /x/.env | grep S",             True),
+        ("path: trailing args",    "head -5 /x/server.pem | less",   True),
+        ("path: chained",          "cat /x/.env && echo ok",           True),
+        ("path: example suffix",   "cat /x/.env.example",              False),
+        ("path: not a path",       "echo no paths here",             False),
     ]
     fails = 0
     try:
