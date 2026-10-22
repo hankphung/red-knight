@@ -27,8 +27,8 @@ CASES = [
     ("short base64-ish",        "YWJjZA==\n"),
     ("big clean output",        "ordinary log line\n" * 5000),
     ("term buried in big out",  "noise\n" * 3000 + "CONFIDENTIAL\n" + "noise\n" * 3000),
-    ("regex entry",             "ticket FRC-4210 is blocked\n"),
-    ("regex near miss",         "ticket FRC-99 is fine\n"),
+    ("regex entry",             "ticket ACME-4210 is blocked\n"),
+    ("regex near miss",         "ticket ACME-99 is fine\n"),
     ("unicode",                 "café CONFIDENTIAL naïve\n"),
     ("term in stderr only",     None),  # handled below
 ]
@@ -61,7 +61,7 @@ def main():
     kw = os.path.join(HERE, "keywords.txt")
     shutil.copy(kw, kw + ".parity.bkp")
     with open(kw, "a") as fh:
-        fh.write("re:\\bFRC-\\d{4}\\b\n")
+        fh.write("re:\\bACME-\\d{4}\\b\n")
     try:
         fails = 0
         print("%-26s %-18s %-18s %s" % ("CASE", "bashfilter.py", "bashguard", ""))
