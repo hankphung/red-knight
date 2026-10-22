@@ -17,9 +17,12 @@
   "keywords_block_override": true,
   "keyword_squash_min": 4,
   "keyword_fold_min": 6,
+  "text_scan_max_bytes": 67108864,
   "entropy_min_len": 24,
   "entropy_threshold": 4.0,
   "redact_emails": true,
   "box_pad": 3,
+  "text_box_grow": 0.15,
+  "secret_to_line_end": true,
   "human_box_grow": 0.12
 }

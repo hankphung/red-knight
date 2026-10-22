@@ -1,11 +1,14 @@
-# claude-local-filter
+# red-knight
 
-A local, offline filter that sits between your files and Claude Code. It
-intercepts the `Read` tool and the output of `Bash`, classifies and redacts
-images, and refuses files and command output that match a keyword denylist.
+A local, offline filter that sits between your files and a coding agent. It
+intercepts file reads and command output, classifies and redacts images, and
+refuses files and output that match a keyword denylist.
 
-Nothing it does touches the network. Classification and OCR run through Apple's
-Vision framework on your own machine.
+Nothing it does touches the network. Classification and OCR run on your own
+machine, today through Apple's Vision framework.
+
+It currently binds to **Claude Code on macOS** -- that is where it is built and
+tested, not where the idea stops. See [Scope today](#scope-today).
 
 It exists for two concrete cases:
 
@@ -15,6 +18,15 @@ It exists for two concrete cases:
 - **secret text, at home and at work** — an `.env` file, a credentials dump, a
   document marked confidential, a production screenshot with a token in the
   header.
+
+## Scope today
+
+Runs on **macOS 12+** with **Claude Code**. Both are current bindings rather than
+design limits: the vision work sits behind a small JSON contract that a different
+backend can satisfy, and the harness only has to offer hooks that can rewrite a
+tool call's input and output. See [Expanding it](#expanding-it) for what that
+would take on other systems, and [docs/PORTING.md](docs/PORTING.md) for measured
+evidence on Linux.
 
 ## This is the last line of defence, not the first
 
@@ -161,6 +173,16 @@ Read this list as the specification of what the tool is, not as fine print.
   where the filter sits. Hooks run on tool calls, and a pasted image is not one.
   Covering it would mean filtering at capture time instead -- a different tool,
   wrapping whatever takes the screenshot.
+- **A document that is sensitive *as a whole* is redacted, not rejected.** This
+  is the sharpest gap in the design. The patterns look for token-shaped things:
+  key prefixes, email structure, Luhn-valid digits. A payslip, bank statement or
+  identity document contains almost none of that -- a salary figure is just a
+  number, a home address matches nothing, a national insurance number with
+  spaces in it misses the IBAN pattern. Such a file can pass with **nothing**
+  redacted and a confident allow, which is worse than a denial because it looks
+  handled. The keyword denylist is the only defence today, and it fires only on
+  words you thought to list. Deciding reject-versus-redact from a document's
+  *composition* rather than from individual pattern matches is not implemented.
 - **Binary files are not keyword-scanned.** Detection is a NUL byte in the first
   8 KB; a term inside a PDF, a zip, an Office document or a compiled artefact is
   not caught.
@@ -365,6 +387,7 @@ src/parity-test          asserts bashguard == bashfilter.py
 src/config.json          tunable thresholds
 src/keywords.txt         example denylist -- replace with your own
 install.sh / uninstall.sh
+docs/PORTING.md          measured analysis of a Linux/Windows port
 ```
 
 Created in the install directory at run time, and never committed:
@@ -387,12 +410,62 @@ swiftc -O -o visionscan visionscan.swift
 swiftc -O -o bashguard bashguard.swift && ./parity-test
 ```
 
-## Platform
+## Expanding it
 
-macOS only. `visionscan` and `bashguard` are Swift against Apple's Vision
-framework, and `VNGeneratePersonSegmentationRequest` and
-`VNDetectDocumentSegmentationRequest` are macOS 12 APIs. There is no Linux or
-Windows path; the image side would need a different vision stack entirely.
+Nothing here is fundamentally macOS- or Claude-specific. Two axes, with different
+amounts of work.
+
+### Other harnesses
+
+The filter needs two things from a harness: a hook before a tool call that can
+**rewrite its input** (to swap in the redacted copy), and one after a command
+that can **replace its output**. Blocking alone is not enough -- a block-only
+hook would have to *deny* an image where this one redacts it, which is a much
+worse tool to live with.
+
+| harness | tool-call hooks | can rewrite input/output |
+| --- | --- | --- |
+| Claude Code | `PreToolUse` / `PostToolUse` | yes -- what this uses |
+| Codex | config-file hooks, modelled on Claude Code's | yes; hosted tools are a blind spot |
+| OpenCode | in-process TS/JS plugins, `tool.execute.before`/`after` | yes |
+| Aider, Goose | none documented | -- |
+
+Rewriting is the uncommon capability. Most agents can stop a tool call; far fewer
+can alter what it sees. Verify against each project's current docs before
+building, since this moves quickly.
+
+### Other operating systems
+
+[docs/PORTING.md](docs/PORTING.md) has the detail, measured in a Linux container
+rather than cited.
+
+- **Linux: near parity.** Every Vision capability has a working, offline,
+  permissively-licensed replacement. The scanner runs about 2x slower, but there
+  is no 20-second cold start, and quad detection is actually better than Vision's.
+- **Windows: achievable**, weakest on human detection. `bashguard` would be Go
+  rather than Swift, which is poorly supported there.
+- **Person segmentation is the one capability that cannot be matched.** A
+  replacement exists and is far faster, but much coarser, and its thresholds do
+  not transfer -- so the policy, not just the numbers, has to be re-tuned per
+  platform. Where a capability cannot be matched, deny the class rather than
+  approximate it.
+
+The recommended shape is **per-platform backends behind the existing `visionscan`
+JSON contract**, not capability detection inside one module. That schema is
+already the interface, and the Linux implementation was a drop-in that needed no
+changes to `imgfilter.py`.
+
+### A different approach entirely
+
+Hooks are per-harness by construction, so covering N agents means N
+implementations. A **local redacting proxy** on the API path would be
+harness-agnostic in one go -- and it would close the pasted-image gap above,
+because a pasted image is in the request body even though it is not a tool call.
+
+The cost is real: such a proxy terminates TLS and becomes your trust boundary,
+and it has to track each provider's request format. Several local LLM redaction
+proxies already exist, but they are text-only -- the image half is the part this
+project has solved and they have not.
 
 ## Licence
 

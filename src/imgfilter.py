@@ -51,6 +51,8 @@ DEFAULTS = {
     "entropy_threshold": 4.0,
     "redact_emails": True,
     "box_pad": 3,
+    "text_box_grow": 0.15,   # flat padding is nothing against 80px text
+    "secret_to_line_end": True,  # OCR splits long tokens; paint the whole tail
     "human_box_grow": 0.12,  # grow human regions by 12% of their own size
 }
 
@@ -89,6 +91,16 @@ RULES = [
 ]
 
 CARD_RE = re.compile(r"\b(?:\d[ \-]?){13,19}\b")
+
+# For these, a half-painted match is a visible secret, so painting runs to the
+# end of the line: OCR splits and mangles long tokens, and the fragment the
+# regex matched is not reliably the whole thing. An email is self-delimiting
+# and does not need it.
+SECRET_KINDS = {
+    "aws_access_key", "anthropic_key", "openai_key", "github_token", "slack_token",
+    "google_api_key", "jwt", "private_key", "bearer", "basic_auth_url",
+    "assigned_secret", "high_entropy", "card_number", "iban",
+}
 
 
 def luhn(digits):
@@ -173,9 +185,21 @@ def boxes_for_text(words, conf):
     hits = []
     for text, ranges in group_lines(words):
         for s, e, kind in find_spans(text, conf):
-            for ws, we, box in ranges:
-                if ws < e and we > s:
-                    hits.append((box, kind))
+            idx = [i for i, (ws, we, _) in enumerate(ranges) if ws < e and we > s]
+            if not idx:
+                continue
+            last = len(ranges) - 1 if (conf["secret_to_line_end"] and kind in SECRET_KINDS) \
+                else idx[-1]
+            # Merge into ONE box spanning the match. Painting each word box
+            # separately leaves the gaps between them bare -- and a gap is
+            # exactly where OCR dropped glyphs it could not read, i.e. the
+            # characters most likely to still be legible in the image.
+            covered = [ranges[i][2] for i in range(idx[0], last + 1)]
+            x0 = min(b["x"] for b in covered)
+            y0 = min(b["y"] for b in covered)
+            x1 = max(b["x"] + b["w"] for b in covered)
+            y1 = max(b["y"] + b["h"] for b in covered)
+            hits.append(({"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0, "c": 1.0}, kind))
     return hits
 
 
@@ -465,7 +489,7 @@ def decide_approved(img, path, conf, override, orig_name=""):
         text_hits = boxes_for_text(final["text"], conf)
         for _, kind in text_hits:
             kinds[kind] = kinds.get(kind, 0) + 1
-        paint(out, [b for b, _ in text_hits], conf["box_pad"])
+        paint(out, [b for b, _ in text_hits], conf["box_pad"], conf["text_box_grow"])
 
     dest = os.path.join(CACHE, "ovr-%s.png" % override["digest"][:24])
     out.save(dest)
@@ -583,7 +607,7 @@ def decide(path, conf, override=None):
         kinds["human_region"] = len(human_boxes)
 
     out = work.copy()
-    paint(out, [b for b, _ in text_hits], conf["box_pad"])
+    paint(out, [b for b, _ in text_hits], conf["box_pad"], conf["text_box_grow"])
     paint(out, human_boxes, conf["box_pad"], conf["human_box_grow"])
 
     try:
