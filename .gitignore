@@ -1,0 +1,19 @@
+# Runtime state -- never commit. These hold real paths, real matched terms and
+# redacted copies of real images.
+cache/
+overrides/
+log.jsonl
+*.bkp
+*.parity.bkp
+
+# Compiled by install.sh; the Swift sources are what is tracked.
+src/visionscan
+src/bashguard
+visionscan
+bashguard
+*.dSYM/
+
+# settings.json backups the installer writes
+settings.json.bak-*
+
+.DS_Store

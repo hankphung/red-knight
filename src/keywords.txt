@@ -1,0 +1,28 @@
+# Keyword denylist for the local file filter.
+#
+# A file whose text -- or whose filename -- matches any live entry here is
+# DENIED outright. It is not redacted, and by default `allow-image` will not
+# override it (see keywords_block_override in config.json).
+#
+# One entry per line. Blank lines and lines starting with # are ignored.
+#   plain text      case-insensitive substring; also matched with all spaces and
+#                   punctuation removed, so OCR damage ("CONF IDENTIAL", "pro-ject
+#                   raven") still hits. Needs 4+ characters to use that fallback.
+#   re:<pattern>    a Python regular expression, case-insensitive
+#
+# The matched term is NEVER written into the reason Claude sees -- that text goes
+# into the transcript, which would leak the very word you are blocking. Denials
+# cite the entry's line number; the term itself stays in log.jsonl on this disk.
+#
+# These four are examples. Replace them with the markings and project names that
+# actually matter to you -- the denylist is only as good as its entries.
+
+confidential
+do not distribute
+not for distribution
+attorney-client privileged
+
+# More examples -- uncomment or replace with your own:
+# acme-project-raven
+# re:\bACME-\d{4}\b
+# re:\b(prod|production)[ _-]?(db|database)[ _-]?(pw|password)\b

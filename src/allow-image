@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Approve one image, once, for one read past the local image filter.
+
+    allow-image <path> [--raw] [--show] [--yes]
+
+The approval is keyed by the file's CONTENT hash, is consumed by the first read
+that uses it, and goes stale on its own. Editing the file after approving it
+drops the approval.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import imgfilter as F  # noqa: E402
+
+
+def confirm(prompt):
+    try:
+        tty = open("/dev/tty")
+    except OSError:
+        tty = sys.stdin
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    return tty.readline().strip().lower() in ("y", "yes")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="allow-image", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("path")
+    ap.add_argument("--raw", action="store_true",
+                    help="send the image as-is; do not paint over secrets in its text")
+    ap.add_argument("--show", action="store_true", help="open it in Preview first")
+    ap.add_argument("--yes", "-y", action="store_true",
+                    help="skip the confirmation (defeats the point; for scripts)")
+    args = ap.parse_args()
+
+    path = os.path.abspath(os.path.expanduser(args.path))
+    if not os.path.isfile(path):
+        sys.exit("not a file: %s" % path)
+    if os.path.splitext(path)[1].lower() not in F.IMAGE_EXT:
+        sys.exit("not an image this filter handles: %s" % path)
+
+    conf = F.load_conf()
+    if args.show:
+        subprocess.run(["/usr/bin/open", "-a", "Preview", path])
+
+    print("\n  file      %s" % path)
+    print("  size      %.1f KB" % (os.path.getsize(path) / 1024.0))
+
+    try:
+        img, norm = F.open_image(path)
+        print("  pixels    %dx%d" % img.size)
+        sc = F.scan(norm)
+        n_text = len(F.boxes_for_text(sc["text"], conf))
+        print("  vision    %d words, %d face(s), %d human(s), person pixels %.1f%%"
+              % (len(sc["text"]), len(sc["faces"]), len(sc["humans"]),
+                 100.0 * sc.get("personCoverage", 0.0)))
+        print("  secrets   %d text region(s) the filter would paint over" % n_text)
+        kws = F.load_keywords()
+        hits = F.keyword_hits([F.scan_text(sc), os.path.basename(path)], kws, conf) if kws else []
+        if hits:
+            print("  keywords  MATCHED: %s" % ", ".join(
+                "line %d (%s)" % (n, r) for n, r in hits))
+            if conf["keywords_block_override"]:
+                print("\n  This image is on the keyword denylist and CANNOT be approved.")
+                print("  Edit keywords.txt, or set keywords_block_override to false in")
+                print("  config.json, if you really mean to let it through.\n")
+                return 2
+        verdict = F.decide(path, conf)
+        if verdict["decision"] == "allow":
+            print("\n  The filter already ALLOWS this image (class=%s). No approval needed.\n"
+                  % verdict["cls"])
+            return 0
+        print("  verdict   DENIED - %s" % verdict["reason"])
+    except Exception as exc:
+        print("  verdict   the filter errors on this image (%r), which denies it" % exc)
+
+    mode = "raw" if args.raw else "redact"
+    print("\n  Approving sends it %s." % (
+        "exactly as-is, with nothing painted over"
+        if args.raw else
+        "with secrets in its text still painted over (use --raw to send it untouched)"))
+    print("  Either way it is re-encoded, so EXIF (including GPS) is dropped.")
+    print("  Good for ONE read, within %d minutes.\n" % (conf["override_ttl_seconds"] // 60))
+
+    if not args.yes and not confirm("  Have you looked at this image, and is it safe to send? [y/N] "):
+        print("\n  Not approved.\n")
+        return 1
+
+    digest = F.file_hash(path)
+    os.makedirs(F.OVERRIDES, exist_ok=True)
+    token = os.path.join(F.OVERRIDES, "%s.json" % digest)
+    with open(token, "w") as fh:
+        json.dump(dict(mode=mode, created=time.time(), src=path), fh)
+    os.chmod(token, 0o600)
+
+    F.log(dict(src=path, decision="approved", mode=mode, digest=digest[:16]))
+    print("\n  Approved (%s). Ask Claude to read:\n    %s\n" % (mode, path))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

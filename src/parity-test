@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""bashguard (Swift) must agree with bashfilter.py (the reference) on every case.
+
+Two implementations of one rule is a drift hazard; this is the guard against it.
+Run it after touching either, or after editing keywords.txt.
+"""
+import json, os, shutil, subprocess, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PY = sys.executable
+CASES = [
+    ("clean output",            "just some ordinary log lines\nnothing notable\n"),
+    ("empty",                   ""),
+    ("whitespace only",         "   \n\t\n"),
+    ("exact term",              "CONFIDENTIAL\n"),
+    ("term lowercase",          "this is confidential material\n"),
+    ("term mid-line",           "header: Confidential - internal\nbody\n"),
+    ("term across newline",     "please do not\ndistribute this\n"),
+    ("term with tabs",          "do\tnot\tdistribute\n"),
+    ("second term",             "NOT FOR DISTRIBUTION\n"),
+    ("hyphenated term",         "attorney-client privileged memo\n"),
+    ("hyphen lost",             "attorneyclient privileged memo\n"),
+    ("near miss",               "confident configuration confidence\n"),
+    ("OCR-style damage",        "C0NFIDENTIAL\n"),
+    ("base64 of a term",        "UTMgbnVtYmVycwpDT05GSURFTlRJQUwgLSBkbyBub3Qgc2hhcmUK\n"),
+    ("base64 of clean text",    "aGVsbG8gd29ybGQgdGhpcyBpcyBmaW5lIGFuZCBsb25nIGVub3VnaA==\n"),
+    ("short base64-ish",        "YWJjZA==\n"),
+    ("big clean output",        "ordinary log line\n" * 5000),
+    ("term buried in big out",  "noise\n" * 3000 + "CONFIDENTIAL\n" + "noise\n" * 3000),
+    ("regex entry",             "ticket FRC-4210 is blocked\n"),
+    ("regex near miss",         "ticket FRC-99 is fine\n"),
+    ("unicode",                 "café CONFIDENTIAL naïve\n"),
+    ("term in stderr only",     None),  # handled below
+]
+
+
+def run(binary, payload, is_swift):
+    cmd = [os.path.join(HERE, "bashguard")] if is_swift else [PY, os.path.join(HERE, "bashfilter.py")]
+    out = subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True).stdout.strip()
+    if not out:
+        return ("pass", [])
+    try:
+        d = json.loads(out)["hookSpecificOutput"]["updatedToolOutput"]["stdout"]
+    except Exception as exc:
+        return ("malformed:%r" % exc, [])
+    # pull the cited line numbers out of the notice so we compare the reason too
+    lines = []
+    if "keywords.txt line" in d:
+        seg = d.split("keywords.txt line")[1].split(")")[0]
+        lines = sorted(int(x) for x in seg.replace("s", "").replace(",", " ").split() if x.isdigit())
+    return ("replaced", lines)
+
+
+def payload_for(stdout, stderr=""):
+    return {"tool_name": "Bash", "tool_input": {"command": "somecmd"},
+            "tool_response": {"stdout": stdout, "stderr": stderr, "interrupted": False,
+                              "isImage": False, "noOutputExpected": False}}
+
+
+def main():
+    kw = os.path.join(HERE, "keywords.txt")
+    shutil.copy(kw, kw + ".parity.bkp")
+    with open(kw, "a") as fh:
+        fh.write("re:\\bFRC-\\d{4}\\b\n")
+    try:
+        fails = 0
+        print("%-26s %-18s %-18s %s" % ("CASE", "bashfilter.py", "bashguard", ""))
+        for name, text in CASES:
+            pl = payload_for("", "CONFIDENTIAL in stderr\n") if text is None else payload_for(text)
+            a = run(None, pl, False)
+            b = run(None, pl, True)
+            same = a == b
+            if not same:
+                fails += 1
+            fa = a[0] + (str(a[1]) if a[1] else "")
+            fb = b[0] + (str(b[1]) if b[1] else "")
+            print("%-26s %-18s %-18s %s" % (name, fa, fb, "ok" if same else "DISAGREE"))
+        # structural cases
+        for name, pl in [
+            ("non-Bash tool", {"tool_name": "Read", "tool_input": {}, "tool_response": {}}),
+            ("no tool_response", {"tool_name": "Bash", "tool_input": {"command": "x"}}),
+            ("self-referencing cmd", {"tool_name": "Bash",
+                                      "tool_input": {"command": "cat %s/keywords.txt" % HERE},
+                                      "tool_response": {"stdout": "CONFIDENTIAL", "stderr": "",
+                                                        "interrupted": False, "isImage": False,
+                                                        "noOutputExpected": False}}),
+        ]:
+            a, b = run(None, pl, False), run(None, pl, True)
+            same = a == b
+            if not same:
+                fails += 1
+            print("%-26s %-18s %-18s %s" % (name, a[0], b[0], "ok" if same else "DISAGREE"))
+        print("\n%s" % ("PARITY OK" if not fails else "%d DISAGREEMENT(S)" % fails))
+        return 1 if fails else 0
+    finally:
+        shutil.move(kw + ".parity.bkp", kw)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
