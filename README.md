@@ -24,8 +24,11 @@ your situation very much.
 
 **Where the real protection comes from:**
 
-- **Don't paste production screenshots.** Pasted and drag-dropped images never
-  reach this filter at all (see below). The habit is the control.
+- **Don't paste production screenshots, and don't drag in personal photos.**
+  Pasted and drag-dropped images never reach this filter at all -- they are not a
+  tool call, so no hook runs on them. For personal images this is the likeliest
+  route of all, which makes the habit not a supporting control here but the only
+  one. See "What still gets through".
 - **Keep secrets out of the working tree.** A secret manager, your keychain, or
   environment variables injected at run time. A `.env` the assistant can't read
   because it isn't there is the only `.env` that is reliably safe.
@@ -146,9 +149,18 @@ the body sent.
 
 Read this list as the specification of what the tool is, not as fine print.
 
-- **Pasted and drag-dropped images bypass it entirely.** They do not go through
-  a tool call, so no hook sees them. This is the single largest gap, and it is
-  the one most likely to matter in practice.
+- **Pasted and drag-dropped images bypass it entirely.** They never become a
+  tool call, so no hook sees them -- not the image filter, not the keyword
+  denylist, nothing. Be blunt with yourself about what that means. If your
+  concern is personal photos, dragging one into the prompt is almost certainly
+  how it would actually happen, and that is precisely the path this tool cannot
+  see. It guards the quieter door. For images you hand over yourself, the
+  protection is your own habit and nothing in this repository changes that.
+
+  This is not a defect to be fixed in a later version; it is a consequence of
+  where the filter sits. Hooks run on tool calls, and a pasted image is not one.
+  Covering it would mean filtering at capture time instead -- a different tool,
+  wrapping whatever takes the screenshot.
 - **Binary files are not keyword-scanned.** Detection is a NUL byte in the first
   8 KB; a term inside a PDF, a zip, an Office document or a compiled artefact is
   not caught.
