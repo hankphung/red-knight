@@ -23,8 +23,10 @@ id_rsa
 id_ed25519
 /.ssh/
 /.gnupg/
+# .pem and friends: on this machine 37 of 108 matches were test
+# fixtures. Harmless to block, but noisy if you work on them.
 re:\.(pem|p12|pfx|keystore|jks)$
-re:(^|/)\.env(\.|$)
+re:(^|/)\.env(\.(?!example$|sample$|template$|dist$|tpl$)[^/]*)?$
 
 # Noisier -- uncomment if you want them. Each one will also match ordinary
 # source files, so try them before committing to them:
