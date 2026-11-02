@@ -171,6 +171,13 @@ things I allow", and denies anything it cannot positively identify. Same reason
 `screenshot` requires real interface text: without it, gradient wallpapers
 landed in the lenient branch.
 
+In practice the test is blunter than "identify": an image needs at least
+`min_words_screenshot` recognised words (5 by default), or a bright, confident
+board quad with `min_words_board`. A wordless chart, an icon, or a diagram with
+three labels on it all fail both and are refused. If that is too much for your
+work, `image_class_gate off` is the switch — it costs you the blanket refusal,
+not the people check, which gets *stricter* on an unidentified image.
+
 The board branch is *tried* first but falls through rather than disqualifying —
 an embedded photo inside an ordinary screenshot also reads as a "surface", and
 that screenshot must still reach the screenshot branch so its human gate
@@ -501,12 +508,51 @@ backend would take.
 
 ## Configuration
 
-Edit `config.json` in the install directory; `DEFAULTS` in `imgfilter.py` holds
-the rest. Likely first edits:
+### Setting an option
+
+The filter lists every option it has, with its current value and where that
+value came from:
+
+```sh
+~/.claude/image-filter/imgfilter.py config
+```
+
+```sh
+~/.claude/image-filter/imgfilter.py config image_humans          # explain one option
+~/.claude/image-filter/imgfilter.py config image_humans off      # set it
+~/.claude/image-filter/imgfilter.py config image_humans default  # back to the profile's value
+```
+
+It writes `config.json` for you and refuses a value an option cannot take.
+Editing that file by hand still works; this saves you guessing key names.
+
+### Censoring: paint it out, or refuse the file
+
+By default a secret found in an image is painted over and the rest of the image
+is sent. That is a judgement about where the secret ends, and you may not want
+one made on your behalf. Three settings, from most permissive to least:
+
+| setting | what happens to an image holding a credential |
+| --- | --- |
+| `image_secrets off` | nothing is looked for; the image is sent as it is |
+| `image_when_secrets redact` (default) | the credential is painted out, the image is sent |
+| `image_when_secrets deny` | the image is refused, nothing is sent |
+
+`screenshot_redact_humans` is the same choice for faces: `on` paints over
+avatars in a screenshot, `off` refuses the screenshot instead. On a board or an
+unidentified image, people always refuse — there is no redact option there,
+because a partly-painted person still carries the room around them.
+
+Switching the *check* off is the only one of the three that sends the file
+untouched, and nothing will remind you later.
+
+### Options people change
 
 | key | effect |
 | --- | --- |
+| `image_class_gate` | `off` stops refusing images it cannot positively identify |
 | `min_words_screenshot` | raise if photos sneak into the screenshot class, lower if sparse screenshots get denied |
+| `image_when_secrets` | `deny` refuses an image holding credentials rather than painting them out |
 | `screenshot_redact_humans` | `false` denies screenshots with avatars instead of painting over them |
 | `redact_emails` | `false` if addresses in screenshots are not a concern |
 | `board_min_quad_conf` / `board_min_quad_area` | if whiteboard photos are denied, check `quad_conf` / `quad_area` in `log.jsonl` first |

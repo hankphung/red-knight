@@ -50,6 +50,7 @@ DEFAULTS = {
     "person_coverage_block": 0.004,   # >0.4% of pixels masked as person => block
     "face_conf": 0.25,                # deliberately low: false positives are cheap
     "human_conf": 0.25,
+    "image_when_secrets": "redact",   # "redact" paints secrets out; "deny" refuses the file
     "screenshot_redact_humans": True, # screenshots: paint over avatars instead of blocking
     "screenshot_coverage_block": 0.12,# unless a real photo is embedded in the screenshot
     "screenshot_nobox_coverage": 0.05,# person pixels but nothing to paint over => block
@@ -92,6 +93,58 @@ PROFILES = {
     "text":    {"text_keywords": True},
     # nothing runs; for turning the filter off without uninstalling it
     "off":     dict.fromkeys(FEATURES, False),
+}
+
+
+FEATURE_HELP = {
+    "image_class_gate": "refuse any image not positively identified as a screenshot or a board",
+    "image_humans":     "detect faces, bodies and person pixels in images",
+    "image_secrets":    "find credentials and personal data in image text",
+    "image_keywords":   "match image text against keywords.txt",
+    "text_keywords":    "match file contents and command output against keywords.txt",
+    "path_filter":      "match the file path against paths.txt",
+}
+
+# Options grouped for `config` listing. Everything in DEFAULTS that is not a
+# feature appears here, so a new setting that is forgotten shows up as a test
+# failure rather than as a silently undocumented knob.
+OPTION_HELP = {
+    "profile": "which set of checks runs: " + ", ".join(sorted(PROFILES)),
+    "image_when_secrets": "secrets in an image: redact paints them out, deny refuses the file",
+    "screenshot_redact_humans": "paint over faces in a screenshot instead of refusing it",
+    "redact_emails": "treat email addresses as something to paint out",
+    "secret_to_line_end": "paint from a secret to the end of its line (OCR splits long tokens)",
+    "keywords_block_override": "a keywords.txt hit cannot be approved away with allow-image",
+    "pdf_when_unscannable": "a PDF this profile cannot read: deny or allow",
+    "color_ratio_photo": "unique colours per pixel above this reads as a photograph",
+    "flat_frac_photo": "flat-pixel fraction below this reads as a photograph",
+    "board_min_quad_area": "a board must cover at least this much of the frame",
+    "board_max_quad_area": "above this the quad is the whole frame, not a surface",
+    "board_min_quad_conf": "how sure the board detector must be",
+    "board_min_brightness": "mean brightness a board must reach",
+    "person_coverage_block": "person pixels above this fraction refuse a board or unknown image",
+    "face_conf": "face detections below this confidence are ignored",
+    "human_conf": "body detections below this confidence are ignored",
+    "screenshot_coverage_block": "person pixels above this refuse a screenshot outright",
+    "screenshot_nobox_coverage": "person pixels with nothing to paint over: refuse above this",
+    "min_words_screenshot": "words of interface text an image needs to count as a screenshot",
+    "min_words_board": "words a board or diagram needs to be worth sending",
+    "override_ttl_seconds": "how long an unused allow-image approval stays valid",
+    "keyword_squash_min": "shorter terms skip punctuation-blind matching",
+    "keyword_fold_min": "shorter terms skip OCR-confusable folding",
+    "text_scan_max_bytes": "a file larger than this cannot be cleared, so it is refused",
+    "entropy_min_len": "shortest run of characters that can look like a random secret",
+    "entropy_threshold": "bits per character above which a run reads as random",
+    "box_pad": "pixels of padding around every painted box",
+    "text_box_grow": "grow text boxes by this fraction of their own size",
+    "human_box_grow": "grow human regions by this fraction of their own size",
+    "pdf_max_pages": "a PDF longer than this cannot be cleared, so it is refused",
+    "pdf_render_scale": "how far above page size PDF pages are rendered for OCR",
+}
+
+CHOICES = {
+    "image_when_secrets": ("redact", "deny"),
+    "pdf_when_unscannable": ("deny", "allow"),
 }
 
 
@@ -763,6 +816,10 @@ def decide(path, conf, override=None, known_class=None):
     kinds = {}
     for _, kind in text_hits:
         kinds[kind] = kinds.get(kind, 0) + 1
+    if text_hits and conf["image_when_secrets"] == "deny":
+        return blocked("credentials or personal data in the image text (%s), and this filter "
+                       "is set to refuse rather than paint them out "
+                       "(image_when_secrets=deny)" % ", ".join(sorted(kinds)))
     human_boxes = faces + humans
     if feat["image_humans"] and final.get("personBBox"):
         human_boxes = human_boxes + [final["personBBox"]]
@@ -836,7 +893,157 @@ def handle_text(path, conf):
     sys.exit(0)
 
 
+CONFIG_USAGE = """usage: imgfilter.py config [<option> [<value>]]
+
+  config                 show every option, its value and where that value comes from
+  config <option>        show one option
+  config <option> <val>  set it in config.json
+  config <option> default  drop it from config.json and go back to the built-in value
+
+Booleans take on/off. Switching a check off is consent: it no longer runs and
+can no longer refuse anything. A check left on that cannot run still refuses.
+"""
+
+
+def read_raw_conf():
+    try:
+        with open(CONF) as fh:
+            raw = json.load(fh)
+    except (IOError, OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def write_raw_conf(raw):
+    tmp = CONF + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(raw, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, CONF)
+
+
+def show_value(v):
+    if isinstance(v, bool):
+        return "on" if v else "off"
+    return str(v)
+
+
+def parse_value(key, text, current):
+    if key in CHOICES:
+        if text not in CHOICES[key]:
+            raise ValueError("%s must be one of: %s" % (key, ", ".join(CHOICES[key])))
+        return text
+    if key == "profile":
+        if text not in PROFILES:
+            raise ValueError("profile must be one of: %s" % ", ".join(sorted(PROFILES)))
+        return text
+    if isinstance(current, bool):
+        low = text.strip().lower()
+        if low in ("on", "true", "yes", "1"):
+            return True
+        if low in ("off", "false", "no", "0"):
+            return False
+        raise ValueError("%s takes on or off, not %r" % (key, text))
+    if isinstance(current, int):
+        return int(text)
+    if isinstance(current, float):
+        return float(text)
+    return text
+
+
+def conf_sources(raw):
+    """Every settable option as (key, value, source, help), features first."""
+    feat = features(dict(DEFAULTS, **raw))
+    prof = raw.get("profile", DEFAULTS["profile"])
+    set_feats = raw.get("features") or {}
+    rows = []
+    for k in FEATURES:
+        src = "config.json" if k in set_feats else "profile:%s" % prof
+        rows.append((k, feat[k], src, FEATURE_HELP[k]))
+    for k in sorted(OPTION_HELP):
+        if k in FEATURES:
+            continue
+        value = raw[k] if k in raw else DEFAULTS[k]
+        rows.append((k, value, "config.json" if k in raw else "default", OPTION_HELP[k]))
+    return rows
+
+
+def cmd_config(argv):
+    if argv and argv[0] in ("-h", "--help"):
+        sys.stdout.write(CONFIG_USAGE)
+        return 0
+
+    raw = read_raw_conf()
+    rows = conf_sources(raw)
+    known = dict((k, (v, src, doc)) for k, v, src, doc in rows)
+
+    if len(argv) > 1 and argv[0] not in known:
+        sys.stderr.write("unknown option %r. Run `config` with no arguments to list them.\n"
+                         % argv[0])
+        return 2
+
+    if len(argv) > 1:
+        key = argv[0]
+        current = known[key][0]
+        if argv[1] == "default":
+            if key in FEATURES:
+                (raw.get("features") or {}).pop(key, None)
+                if raw.get("features") == {}:
+                    raw.pop("features", None)
+            else:
+                raw.pop(key, None)
+        else:
+            try:
+                value = parse_value(key, argv[1], current)
+            except ValueError as exc:
+                sys.stderr.write("%s\n" % exc)
+                return 2
+            if key in FEATURES:
+                raw.setdefault("features", {})[key] = value
+            else:
+                raw[key] = value
+        try:
+            write_raw_conf(raw)
+        except (IOError, OSError) as exc:
+            sys.stderr.write("could not write %s: %s\n" % (CONF, exc))
+            return 1
+        after = dict((k, (v, src)) for k, v, src, _ in conf_sources(read_raw_conf()))
+        sys.stdout.write("%s: %s -> %s (%s)\n"
+                         % (key, show_value(current), show_value(after[key][0]), after[key][1]))
+        return 0
+
+    if argv:
+        key = argv[0]
+        if key not in known:
+            sys.stderr.write("unknown option %r. Run `config` with no arguments to list them.\n"
+                             % key)
+            return 2
+        value, src, doc = known[key]
+        sys.stdout.write("%s = %s   (%s)\n  %s\n" % (key, show_value(value), src, doc))
+        if key in CHOICES:
+            sys.stdout.write("  one of: %s\n" % ", ".join(CHOICES[key]))
+        return 0
+
+    width = max(len(k) for k, _, _, _ in rows)
+    sys.stdout.write("%s\n\n" % CONF)
+    sys.stdout.write("checks -- a check switched off does not run and cannot refuse\n")
+    for k, v, src, doc in rows:
+        if k not in FEATURES:
+            continue
+        sys.stdout.write("  %-*s  %-6s  %-14s  %s\n" % (width, k, show_value(v), src, doc))
+    sys.stdout.write("\nsettings\n")
+    for k, v, src, doc in rows:
+        if k in FEATURES:
+            continue
+        sys.stdout.write("  %-*s  %-6s  %-14s  %s\n" % (width, k, show_value(v), src, doc))
+    sys.stdout.write("\n%s" % CONFIG_USAGE)
+    return 0
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "config":
+        sys.exit(cmd_config(sys.argv[2:]))
+
     try:
         payload = json.load(sys.stdin)
     except Exception:
