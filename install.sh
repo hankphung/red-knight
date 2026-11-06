@@ -174,12 +174,13 @@ for s in visionscan bashguard; do
 done
 
 step "Installing files into $INSTALL_DIR"
-for f in imgfilter.py bashfilter.py allow-image parity-test visionscan.swift bashguard.swift; do
+for f in imgfilter.py bashfilter.py allow-image parity-test injection-test visionscan.swift bashguard.swift; do
   cp "$SRC/$f" "$INSTALL_DIR/$f"
 done
 chmod +x "$INSTALL_DIR/imgfilter.py" "$INSTALL_DIR/bashfilter.py" \
-         "$INSTALL_DIR/allow-image" "$INSTALL_DIR/parity-test"
-say "  code: imgfilter.py bashfilter.py allow-image parity-test (+ the .swift sources)"
+         "$INSTALL_DIR/allow-image" "$INSTALL_DIR/parity-test" \
+         "$INSTALL_DIR/injection-test"
+say "  code: imgfilter.py bashfilter.py allow-image parity-test injection-test (+ the .swift sources)"
 
 # Your tuning and your denylist are yours; never clobber them on a re-run.
 kept=""

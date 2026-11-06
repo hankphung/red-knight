@@ -26,3 +26,30 @@ attorney-client privileged
 # acme-project-raven
 # re:\bACME-\d{4}\b
 # re:\b(prod|production)[ _-]?(db|database)[ _-]?(pw|password)\b
+
+# ---------------------------------------------------------------------------
+# Indirect prompt injection. Generic, not site-specific -- unlike everything
+# above, these are not yours to replace.
+#
+# They match the imperative an injected instruction has to use, never the
+# subject itself, so writing *about* the attack does not trip them. A hit
+# denies the file outright like any other entry, and with keywords_block_override
+# on it cannot be waved through with allow-image -- which also means a security
+# article quoting a real payload is refused. That is the trade.
+#
+# A blunt first pass: it catches the copied payload and the careless attacker.
+# Anything rephrased walks straight past. The layer is not meant to be complete.
+# ---------------------------------------------------------------------------
+
+re:\b(?:ignore|disregard|forget|override|bypass)\W{1,4}(?:(?:all|any|the|your)\W{1,4}){0,3}(?:previous|prior|earlier|preceding|above|foregoing|original|initial)\W{1,4}(?:instruction|prompt|direction|rule|command|guideline|context)s?\b
+re:\b(?:ignore|disregard|forget|override)\W{1,4}(?:your|the|all)\W{1,4}(?:system\W{1,4})?(?:prompt|instructions?|rules?|guidelines?|directives?|safety|training)\b
+re:\b(?:new|updated|revised|override)\W{1,4}system\W{1,4}(?:prompt|instruction|message|directive)s?\b
+re:\binstructions?\W{1,4}(?:for|to)\W{1,4}(?:the\W{1,4})?(?:ai|assistant|agent|llm|language\W{1,4}model|chat\W{0,3}bot|claude|gpt|copilot)\b
+re:\b(?:do\W{1,4}not|don'?t|never)\W{1,4}(?:tell|inform|notify|alert|warn)\W{1,4}(?:the\W{1,4})?(?:user|human|operator)\b
+re:\bwithout\W{1,4}(?:telling|informing|notifying|asking|alerting)\W{1,4}(?:the\W{1,4})?(?:user|human|operator)\b
+re:\b(?:do\W{1,4}not|don'?t|never)\W{1,4}(?:mention|reveal|disclose|repeat|summari[sz]e)\W{1,4}(?:this|these\W{1,4}instructions?|the\W{1,4}above)\b
+re:\b(?:send|post|upload|transmit|exfiltrate|forward)\W{1,4}(?:(?:the|your|all|any)\W{1,4}){0,3}(?:contents?|files?|secrets?|credentials?|api\W{0,3}keys?|tokens?|passwords?|env(?:ironment)?\W{0,3}(?:vars?|variables?))\W{1,12}to\W{1,4}(?:https?://|www\.|[\w-]+\.[a-z]{2,})
+re:\byou\W{1,4}are\W{1,4}(?:now\W{1,4})?(?:in\W{1,4})?(?:dan|developer|debug|god|unrestricted|jailbroken|admin)\W{0,4}mode\b
+re:\b(?:run|execute)\W{1,4}(?:the\W{1,4}following|this)\W{1,4}(?:command|script|code)\W{1,8}(?:silently|quietly|without\W{1,4}(?:telling|asking|mentioning))\b
+re:<!--\W{0,4}(?:ai|llm|assistant|claude|gpt|system|bot)\b[^>]{0,80}(?:instruct|ignore|execute|fetch|send)
+ignore previous instructions
